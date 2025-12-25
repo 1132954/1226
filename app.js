@@ -45,8 +45,8 @@ let scoringMode = false;
 let deadMarks = new Set();       // "r,c"
 let gameEnded = false;
 
-// ✅ for territory overlay in scoring mode
-let territoryOwner = null;       // 2D: 0/1/2 (EMPTY means not-owned/neutral)
+// territory overlay in scoring mode
+let territoryOwner = null;       // 2D: EMPTY/BLACK/WHITE
 
 function opponent(color){ return color === BLACK ? WHITE : BLACK; }
 function colorName(color){ return color === BLACK ? "黑" : "白"; }
@@ -66,7 +66,6 @@ function initState(n){
   scoringMode = false;
   deadMarks = new Set();
   gameEnded = false;
-
   territoryOwner = null;
 
   renderBoard();
@@ -78,20 +77,14 @@ function initState(n){
   recalcBtn.disabled = true;
   confirmBtn.disabled = true;
 
-  hintEl.textContent = "點格線交叉點落子；不允許自殺；單劫禁止立刻還原上一盤面。";
+  hintEl.textContent = "點交叉點落子；不允許自殺；單劫禁止立刻還原上一盤面。";
 }
 
 function boardToString(b){
   return b.map(row => row.join("")).join("|");
 }
-
-function cloneBoard(b){
-  return b.map(row => row.slice());
-}
-
-function inBounds(r,c){
-  return r>=0 && r<N && c>=0 && c<N;
-}
+function cloneBoard(b){ return b.map(row => row.slice()); }
+function inBounds(r,c){ return r>=0 && r<N && c>=0 && c<N; }
 
 function neighbors(r,c){
   const out = [];
@@ -151,10 +144,8 @@ function tryPlayMove(r,c){
   const beforeCaptures = { ...captures };
   const beforeLastMove = lastMove;
 
-  // place
   board[r][c] = me;
 
-  // capture opponent groups with no liberties
   let capturedCount = 0;
   for(const [nr,nc] of neighbors(r,c)){
     if(board[nr][nc] === opp){
@@ -166,7 +157,6 @@ function tryPlayMove(r,c){
     }
   }
 
-  // suicide check
   const myGroup = getGroupAndLiberties(board, r, c);
   if(myGroup.liberties === 0){
     board = before;
@@ -175,7 +165,6 @@ function tryPlayMove(r,c){
     return { ok:false, msg:"不合法：自殺（禁入點）" };
   }
 
-  // ko check: forbid immediate repetition to previous position
   const nowStr = boardToString(board);
   if(nowStr === lastBoardString){
     board = before;
@@ -184,13 +173,9 @@ function tryPlayMove(r,c){
     return { ok:false, msg:"不合法：劫（Ko）" };
   }
 
-  // update ko memory (store previous position)
   lastBoardString = boardToString(before);
 
-  // update captures
-  if(capturedCount > 0){
-    captures[me] += capturedCount;
-  }
+  if(capturedCount > 0) captures[me] += capturedCount;
 
   lastMove = { r, c };
 
@@ -200,7 +185,6 @@ function tryPlayMove(r,c){
 
   turn = opp;
   consecutivePass = 0;
-
   scoreBtn.disabled = true;
 
   return { ok:true, msg: capturedCount>0 ? `提子 ${capturedCount} 顆` : "落子成功" };
@@ -230,7 +214,7 @@ function pass(){
   consecutivePass += 1;
 
   if(consecutivePass >= 2){
-    hintEl.textContent = "已連續兩次 Pass。可按『計分』進入死活標記與計分（並顯示黑地/白地上色）。";
+    hintEl.textContent = "已連續兩次 Pass。可按『計分』進入死活標記與計分（顯示黑地/白地與輪廓）。";
     scoreBtn.disabled = false;
   }else{
     hintEl.textContent = `${colorName(me)} Pass。輪到 ${colorName(turn)}。`;
@@ -251,12 +235,11 @@ function toggleScoringMode(){
   scoringMode = !scoringMode;
 
   if(scoringMode){
-    hintEl.textContent = "計分模式：點棋子可標記死子（再點一次取消）。空地會上色顯示黑地/白地。";
+    hintEl.textContent = "計分模式：點棋子可標記死子（再點一次取消）。空地會上色顯示黑地/白地（含輪廓）。";
     modeBadge.textContent = "計分模式";
     modeBadge.classList.add("score");
     recalcBtn.disabled = false;
     confirmBtn.disabled = false;
-
     recalcScore();
   }else{
     hintEl.textContent = "已退出計分模式，回到對局。若要重新計分，需再次連續兩次 Pass。";
@@ -279,13 +262,13 @@ function recalcScore(){
 
   const score = computeScore({ komi });
   renderScorePanel(score);
-
   renderBoard();
 }
 
 function confirmEnd(){
   if(!scoringMode) return;
   gameEnded = true;
+
   hintEl.textContent = "已確認終局。若要再下一局，請按重置。";
   scoreBtn.disabled = true;
   passBtn.disabled = true;
@@ -303,7 +286,6 @@ function reset(){
   sizeEl.disabled = false;
   komiEl.disabled = false;
   scoreBtn.disabled = true;
-
   initState(parseInt(sizeEl.value, 10));
 }
 
@@ -353,29 +335,22 @@ function renderScorePanel(score){
 
   bTerEl.textContent = String(score.territory.black);
   wTerEl.textContent = String(score.territory.white);
-
   bPrisEl.textContent = String(score.prisoners.black);
   wPrisEl.textContent = String(score.prisoners.white);
-
   bTotalEl.textContent = String(score.total.black);
   wTotalEl.textContent = String(score.total.white);
-
   resultText.textContent = score.resultText;
 }
 
 /**
- * Compute Japanese-style score:
- * - territory (enclosed empty points)
- * - prisoners (captures + dead stones)
- * - komi to White
- *
- * ✅ Also produces a territoryOwner map for overlay:
- *    territoryOwner[r][c] = BLACK / WHITE / EMPTY(neutral)
+ * Japanese-style scoring:
+ * territory + prisoners (captures + dead stones) + komi to White
+ * Also computes territoryOwner for overlay (EMPTY = neutral/not-territory).
  */
 function computeScore({ komi }){
   const b = cloneBoard(board);
 
-  // remove dead stones, count them
+  // remove dead stones; count as prisoners for opponent
   let deadBlack = 0, deadWhite = 0;
   for(const k of deadMarks){
     const [r,c] = parseKey(k);
@@ -401,7 +376,6 @@ function computeScore({ komi }){
       const k0 = keyOf(r,c);
       if(seen.has(k0)) continue;
 
-      // flood fill this empty region
       const q = [[r,c]];
       seen.add(k0);
       const region = [];
@@ -427,11 +401,9 @@ function computeScore({ komi }){
       if(borderColors.size === 1){
         const only = [...borderColors][0];
         for(const [rr,cc] of region) territoryOwner[rr][cc] = only;
-
         if(only === BLACK) terBlack += region.length;
         if(only === WHITE) terWhite += region.length;
       }else{
-        // neutral / dame / shared-border
         for(const [rr,cc] of region) territoryOwner[rr][cc] = EMPTY;
       }
     }
@@ -460,7 +432,6 @@ function renderBoard(){
   boardEl.style.setProperty("--n", String(N));
   boardEl.innerHTML = "";
 
-  // ✅ scoring mode adds a class to enable territory overlay opacity
   if(scoringMode) boardEl.classList.add("score-on");
   else boardEl.classList.remove("score-on");
 
@@ -474,16 +445,35 @@ function renderBoard(){
       pt.dataset.r = String(r);
       pt.dataset.c = String(c);
 
-      // ✅ territory overlay (only visible in scoring mode, and only on empty points)
-      if(scoringMode && territoryOwner){
-        if(board[r][c] === EMPTY){
-          const owner = territoryOwner[r][c]; // BLACK/WHITE/EMPTY
-          const t = document.createElement("div");
-          if(owner === BLACK) t.className = "territory black";
-          else if(owner === WHITE) t.className = "territory white";
-          else t.className = "territory neutral";
-          pt.appendChild(t);
+      // ✅ territory overlay (empty points only, scoring mode only)
+      if(scoringMode && territoryOwner && board[r][c] === EMPTY){
+        const owner = territoryOwner[r][c]; // BLACK/WHITE/EMPTY
+        const t = document.createElement("div");
+
+        if(owner === BLACK) t.className = "territory black";
+        else if(owner === WHITE) t.className = "territory white";
+        else t.className = "territory neutral";
+
+        // ✅ border outline for connected territory blocks (black/white only)
+        if(owner === BLACK || owner === WHITE){
+          const sameOwner = (rr, cc) => {
+            if(rr < 0 || rr >= N || cc < 0 || cc >= N) return false;
+            return board[rr][cc] === EMPTY && territoryOwner[rr][cc] === owner;
+          };
+
+          const topB = !sameOwner(r - 1, c);
+          const rightB = !sameOwner(r, c + 1);
+          const bottomB = !sameOwner(r + 1, c);
+          const leftB = !sameOwner(r, c - 1);
+
+          const W = "1.5px";
+          t.style.setProperty("--bt", topB ? W : "0px");
+          t.style.setProperty("--br", rightB ? W : "0px");
+          t.style.setProperty("--bb", bottomB ? W : "0px");
+          t.style.setProperty("--bl", leftB ? W : "0px");
         }
+
+        pt.appendChild(t);
       }
 
       // hover preview only when playing
@@ -492,6 +482,7 @@ function renderBoard(){
       if(scoringMode || gameEnded) preview.style.display = "none";
       pt.appendChild(preview);
 
+      // stones
       const v = board[r][c];
       if(v !== EMPTY){
         const stone = document.createElement("div");
