@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>圍棋 Go</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo">围</div>
+        <div class="titles">
+          <h1>圍棋</h1>
+          <p>支援提子・禁入點（自殺）・單劫（Ko）・終局計分</p>
+        </div>
+      </div>
+
+      <div class="controls">
+        <div class="control">
+          <label for="size">棋盤</label>
+          <select id="size">
+            <option value="9">9 路</option>
+            <option value="13">13 路</option>
+            <option value="19" selected>19 路</option>
+          </select>
+        </div>
+
+        <div class="control">
+          <label for="komi">貼目</label>
+          <input id="komi" type="number" step="0.5" value="6.5" />
+        </div>
+
+        <button id="passBtn" class="btn">Pass</button>
+        <button id="scoreBtn" class="btn btn-accent" disabled>計分</button>
+        <button id="resetBtn" class="btn btn-ghost">重置</button>
+      </div>
+    </header>
+
+    <main class="main">
+      <section class="left">
+        <div class="panel">
+          <div class="status">
+            <div class="turn">
+              <span class="dot" id="turnDot"></span>
+              <span id="turnText">輪到：黑</span>
+              <span id="modeBadge" class="badge">對局中</span>
+            </div>
+            <div class="meta">
+              <span>黑提子：<b id="capBlack">0</b></span>
+              <span>白提子：<b id="capWhite">0</b></span>
+            </div>
+          </div>
+
+          <div class="board-wrap">
+            <div id="board" class="board" aria-label="圍棋棋盤"></div>
+          </div>
+
+          <div class="hint" id="hint">
+            點格線交叉點落子；不允許自殺；單劫禁止立刻還原上一盤面。
+          </div>
+        </div>
+      </section>
+
+      <aside class="right">
+        <div class="panel panel-small">
+          <h2>操作</h2>
+          <ul>
+            <li>左鍵：落子（或在計分模式標記死子）</li>
+            <li>Pass：跳過回合；連續兩次 Pass 可開始計分</li>
+            <li>計分：進入/退出計分模式（可點棋子標死子）</li>
+          </ul>
+        </div>
+
+        <div class="panel panel-small">
+          <h2>計分面板</h2>
+          <div id="scorePanel" class="scorepanel">
+            <div class="row"><span>黑地</span><b id="bTer">0</b></div>
+            <div class="row"><span>白地</span><b id="wTer">0</b></div>
+            <div class="row"><span>黑提子</span><b id="bPris">0</b></div>
+            <div class="row"><span>白提子</span><b id="wPris">0</b></div>
+            <div class="row"><span>貼目（白）</span><b id="komiShow">6.5</b></div>
+            <div class="divider"></div>
+            <div class="row total"><span>黑總分</span><b id="bTotal">0</b></div>
+            <div class="row total"><span>白總分</span><b id="wTotal">0</b></div>
+            <div class="result" id="resultText">尚未計分</div>
+
+            <div class="scoreActions">
+              <button id="recalcBtn" class="btn btn-ghost btn-small" disabled>重新計算</button>
+              <button id="confirmBtn" class="btn btn-small" disabled>確認終局</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel panel-small">
+          <h2>棋譜</h2>
+          <div id="moves" class="moves"></div>
+        </div>
+      </aside>
+    </main>
+
+    <footer class="footer">
+      <span>計分為「地 + 提子 + 死子（算提子） + 貼目」，死活需手動標記。</span>
+    </footer>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
