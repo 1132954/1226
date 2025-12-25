@@ -214,7 +214,7 @@ function pass(){
   consecutivePass += 1;
 
   if(consecutivePass >= 2){
-    hintEl.textContent = "已連續兩次 Pass。可按『計分』進入死活標記與計分（顯示黑地/白地與輪廓）。";
+    hintEl.textContent = "已連續兩次 Pass。可按『計分』進入死活標記與計分（圓點數地）。";
     scoreBtn.disabled = false;
   }else{
     hintEl.textContent = `${colorName(me)} Pass。輪到 ${colorName(turn)}。`;
@@ -235,7 +235,7 @@ function toggleScoringMode(){
   scoringMode = !scoringMode;
 
   if(scoringMode){
-    hintEl.textContent = "計分模式：點棋子可標記死子（再點一次取消）。空地會上色顯示黑地/白地（含輪廓）。";
+    hintEl.textContent = "計分模式：點棋子可標記死子（再點一次取消）。空地會以圓點顯示黑地/白地（中立不顯示）。";
     modeBadge.textContent = "計分模式";
     modeBadge.classList.add("score");
     recalcBtn.disabled = false;
@@ -345,7 +345,7 @@ function renderScorePanel(score){
 /**
  * Japanese-style scoring:
  * territory + prisoners (captures + dead stones) + komi to White
- * Also computes territoryOwner for overlay (EMPTY = neutral/not-territory).
+ * Also computes territoryOwner for dot overlay (EMPTY = neutral).
  */
 function computeScore({ komi }){
   const b = cloneBoard(board);
@@ -410,7 +410,6 @@ function computeScore({ komi }){
   }
 
   const territory = { black: terBlack, white: terWhite };
-
   const totalBlack = territory.black + prisoners.black;
   const totalWhite = territory.white + prisoners.white + komi;
 
@@ -445,34 +444,13 @@ function renderBoard(){
       pt.dataset.r = String(r);
       pt.dataset.c = String(c);
 
-      // ✅ territory overlay (empty points only, scoring mode only)
+      // ✅ dot territory overlay (empty points only, scoring mode only)
       if(scoringMode && territoryOwner && board[r][c] === EMPTY){
-        const owner = territoryOwner[r][c]; // BLACK/WHITE/EMPTY
+        const owner = territoryOwner[r][c];
         const t = document.createElement("div");
-
         if(owner === BLACK) t.className = "territory black";
         else if(owner === WHITE) t.className = "territory white";
         else t.className = "territory neutral";
-
-        // ✅ border outline for connected territory blocks (black/white only)
-        if(owner === BLACK || owner === WHITE){
-          const sameOwner = (rr, cc) => {
-            if(rr < 0 || rr >= N || cc < 0 || cc >= N) return false;
-            return board[rr][cc] === EMPTY && territoryOwner[rr][cc] === owner;
-          };
-
-          const topB = !sameOwner(r - 1, c);
-          const rightB = !sameOwner(r, c + 1);
-          const bottomB = !sameOwner(r + 1, c);
-          const leftB = !sameOwner(r, c - 1);
-
-          const W = "1.5px";
-          t.style.setProperty("--bt", topB ? W : "0px");
-          t.style.setProperty("--br", rightB ? W : "0px");
-          t.style.setProperty("--bb", bottomB ? W : "0px");
-          t.style.setProperty("--bl", leftB ? W : "0px");
-        }
-
         pt.appendChild(t);
       }
 
@@ -506,7 +484,7 @@ function renderBoard(){
 
         if(scoringMode){
           if(board[rr][cc] === EMPTY){
-            hintEl.textContent = "計分模式：空地只顯示地的歸屬；要改分數請標記死子（點棋子）。";
+            hintEl.textContent = "計分模式：空地用圓點顯示地的歸屬；要改分數請標記死子（點棋子）。";
             return;
           }
           const k = keyOf(rr,cc);
