@@ -1,15 +1,12 @@
 :root{
   --bg: #0c0f14;
   --panel: rgba(255,255,255,0.06);
-  --panel2: rgba(255,255,255,0.09);
   --text: rgba(255,255,255,0.92);
   --muted: rgba(255,255,255,0.65);
-  --line: rgba(255,255,255,0.14);
   --accent: #8bd3ff;
   --accent2:#9bf7c8;
   --wood1: #cfa56b;
   --wood2: #b8894e;
-  --shadow: rgba(0,0,0,0.45);
 }
 
 *{ box-sizing: border-box; }
@@ -132,7 +129,7 @@ input{ width: 90px; }
 }
 
 .panel{
-  background: var(--panel);
+  background: rgba(255,255,255,0.06);
   border: 1px solid rgba(255,255,255,0.10);
   border-radius: 18px;
   padding: 14px;
@@ -303,17 +300,24 @@ input{ width: 90px; }
   text-shadow: 0 10px 20px rgba(0,0,0,0.55);
 }
 
-/* ✅ 計分模式：地的上色（透明覆蓋） */
+/* ✅ 地的上色 + 連通區塊邊界輪廓 */
 .territory{
   position:absolute;
   width: 74%;
   height: 74%;
-  border-radius: 14px;
+  border-radius: 12px;
   opacity: 0.0;
   transform: scale(0.98);
   transition: opacity .12s ease, transform .12s ease;
   pointer-events:none;
-  filter: blur(0.0px);
+
+  --bt: 0px;
+  --br: 0px;
+  --bb: 0px;
+  --bl: 0px;
+
+  border-style: solid;
+  border-width: var(--bt) var(--br) var(--bb) var(--bl);
 }
 .score-on .territory{
   opacity: 0.55;
@@ -321,16 +325,17 @@ input{ width: 90px; }
 }
 .territory.black{
   background: radial-gradient(circle at 35% 35%, rgba(0,0,0,0.15), rgba(0,0,0,0.38));
-  outline: 1px solid rgba(0,0,0,0.22);
+  border-color: rgba(0,0,0,0.38);
 }
 .territory.white{
   background: radial-gradient(circle at 35% 35%, rgba(255,255,255,0.18), rgba(255,255,255,0.42));
-  outline: 1px solid rgba(255,255,255,0.25);
+  border-color: rgba(255,255,255,0.38);
 }
 .territory.neutral{
   background: radial-gradient(circle at 35% 35%, rgba(80,120,255,0.10), rgba(80,120,255,0.18));
   outline: 1px dashed rgba(80,120,255,0.22);
   opacity: 0.22;
+  border-width: 0;
 }
 
 .hint{
