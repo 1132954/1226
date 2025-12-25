@@ -45,6 +45,9 @@ let scoringMode = false;
 let deadMarks = new Set();       // "r,c"
 let gameEnded = false;
 
+// ✅ for territory overlay in scoring mode
+let territoryOwner = null;       // 2D: 0/1/2 (EMPTY means not-owned/neutral)
+
 function opponent(color){ return color === BLACK ? WHITE : BLACK; }
 function colorName(color){ return color === BLACK ? "黑" : "白"; }
 function keyOf(r,c){ return `${r},${c}`; }
@@ -63,6 +66,8 @@ function initState(n){
   scoringMode = false;
   deadMarks = new Set();
   gameEnded = false;
+
+  territoryOwner = null;
 
   renderBoard();
   renderStatus();
@@ -196,7 +201,6 @@ function tryPlayMove(r,c){
   turn = opp;
   consecutivePass = 0;
 
-  // after a real move, scoring no longer "eligible by passes" until passes happen again
   scoreBtn.disabled = true;
 
   return { ok:true, msg: capturedCount>0 ? `提子 ${capturedCount} 顆` : "落子成功" };
@@ -226,7 +230,7 @@ function pass(){
   consecutivePass += 1;
 
   if(consecutivePass >= 2){
-    hintEl.textContent = "已連續兩次 Pass。可按『計分』進入死活標記與計分。";
+    hintEl.textContent = "已連續兩次 Pass。可按『計分』進入死活標記與計分（並顯示黑地/白地上色）。";
     scoreBtn.disabled = false;
   }else{
     hintEl.textContent = `${colorName(me)} Pass。輪到 ${colorName(turn)}。`;
@@ -239,7 +243,6 @@ function pass(){
 function toggleScoringMode(){
   if(gameEnded) return;
 
-  // only allow entering score mode after 2 passes
   if(!scoringMode && consecutivePass < 2){
     hintEl.textContent = "需連續兩次 Pass 後才能計分。";
     return;
@@ -248,13 +251,12 @@ function toggleScoringMode(){
   scoringMode = !scoringMode;
 
   if(scoringMode){
-    hintEl.textContent = "計分模式：點棋子可標記死子（再點一次取消）。按『重新計算』更新分數。";
+    hintEl.textContent = "計分模式：點棋子可標記死子（再點一次取消）。空地會上色顯示黑地/白地。";
     modeBadge.textContent = "計分模式";
     modeBadge.classList.add("score");
     recalcBtn.disabled = false;
     confirmBtn.disabled = false;
 
-    // first calc
     recalcScore();
   }else{
     hintEl.textContent = "已退出計分模式，回到對局。若要重新計分，需再次連續兩次 Pass。";
@@ -262,10 +264,12 @@ function toggleScoringMode(){
     modeBadge.classList.remove("score");
     recalcBtn.disabled = true;
     confirmBtn.disabled = true;
+
+    territoryOwner = null;
     renderScorePanel(null);
+    renderBoard();
   }
 
-  renderBoard();
   renderStatus();
 }
 
@@ -274,9 +278,9 @@ function recalcScore(){
   komiShowEl.textContent = String(komi);
 
   const score = computeScore({ komi });
-
   renderScorePanel(score);
-  renderBoard(); // to show territory coloring later if you want; currently we keep it simple
+
+  renderBoard();
 }
 
 function confirmEnd(){
@@ -295,7 +299,6 @@ function confirmEnd(){
 }
 
 function reset(){
-  // re-enable controls
   passBtn.disabled = false;
   sizeEl.disabled = false;
   komiEl.disabled = false;
@@ -365,12 +368,14 @@ function renderScorePanel(score){
  * - territory (enclosed empty points)
  * - prisoners (captures + dead stones)
  * - komi to White
+ *
+ * ✅ Also produces a territoryOwner map for overlay:
+ *    territoryOwner[r][c] = BLACK / WHITE / EMPTY(neutral)
  */
 function computeScore({ komi }){
-  // work on a copy board where dead stones are removed
   const b = cloneBoard(board);
 
-  // count dead stones by color, remove them
+  // remove dead stones, count them
   let deadBlack = 0, deadWhite = 0;
   for(const k of deadMarks){
     const [r,c] = parseKey(k);
@@ -380,14 +385,13 @@ function computeScore({ komi }){
     b[r][c] = EMPTY;
   }
 
-  // prisoners = current captures + opponent dead stones
-  // If black stones are dead => white gets prisoners
   const prisoners = {
     black: captures[BLACK] + deadWhite,
     white: captures[WHITE] + deadBlack
   };
 
-  // territory calculation on empty regions
+  // territory calc + owner map
+  territoryOwner = Array.from({ length: N }, () => Array(N).fill(EMPTY));
   const seen = new Set();
   let terBlack = 0, terWhite = 0;
 
@@ -397,7 +401,7 @@ function computeScore({ komi }){
       const k0 = keyOf(r,c);
       if(seen.has(k0)) continue;
 
-      // flood fill empty region
+      // flood fill this empty region
       const q = [[r,c]];
       seen.add(k0);
       const region = [];
@@ -420,11 +424,15 @@ function computeScore({ komi }){
         }
       }
 
-      // if region borders only one color => territory for that color
       if(borderColors.size === 1){
         const only = [...borderColors][0];
+        for(const [rr,cc] of region) territoryOwner[rr][cc] = only;
+
         if(only === BLACK) terBlack += region.length;
         if(only === WHITE) terWhite += region.length;
+      }else{
+        // neutral / dame / shared-border
+        for(const [rr,cc] of region) territoryOwner[rr][cc] = EMPTY;
       }
     }
   }
@@ -452,6 +460,10 @@ function renderBoard(){
   boardEl.style.setProperty("--n", String(N));
   boardEl.innerHTML = "";
 
+  // ✅ scoring mode adds a class to enable territory overlay opacity
+  if(scoringMode) boardEl.classList.add("score-on");
+  else boardEl.classList.remove("score-on");
+
   const intersections = document.createElement("div");
   intersections.className = "intersections";
 
@@ -462,7 +474,19 @@ function renderBoard(){
       pt.dataset.r = String(r);
       pt.dataset.c = String(c);
 
-      // hover preview stone only when playing
+      // ✅ territory overlay (only visible in scoring mode, and only on empty points)
+      if(scoringMode && territoryOwner){
+        if(board[r][c] === EMPTY){
+          const owner = territoryOwner[r][c]; // BLACK/WHITE/EMPTY
+          const t = document.createElement("div");
+          if(owner === BLACK) t.className = "territory black";
+          else if(owner === WHITE) t.className = "territory white";
+          else t.className = "territory neutral";
+          pt.appendChild(t);
+        }
+      }
+
+      // hover preview only when playing
       const preview = document.createElement("div");
       preview.className = `preview ${turn === BLACK ? "black" : "white"}`;
       if(scoringMode || gameEnded) preview.style.display = "none";
@@ -477,7 +501,6 @@ function renderBoard(){
           stone.classList.add("lastmove");
         }
 
-        // dead mark overlay in scoring mode
         const dk = keyOf(r,c);
         if(scoringMode && deadMarks.has(dk)){
           stone.classList.add("dead");
@@ -491,9 +514,8 @@ function renderBoard(){
         const cc = parseInt(pt.dataset.c, 10);
 
         if(scoringMode){
-          // toggle dead mark on stones only
           if(board[rr][cc] === EMPTY){
-            hintEl.textContent = "計分模式：只能點棋子標記死子。";
+            hintEl.textContent = "計分模式：空地只顯示地的歸屬；要改分數請標記死子（點棋子）。";
             return;
           }
           const k = keyOf(rr,cc);
@@ -525,11 +547,10 @@ scoreBtn.addEventListener("click", toggleScoringMode);
 recalcBtn.addEventListener("click", recalcScore);
 confirmBtn.addEventListener("click", confirmEnd);
 
-// init
-initState(parseInt(sizeEl.value, 10));
-
-// keep komi display in panel synced
 komiEl.addEventListener("input", () => {
   komiShowEl.textContent = String(Number(komiEl.value || 0));
   if(scoringMode) recalcScore();
 });
+
+// init
+initState(parseInt(sizeEl.value, 10));
