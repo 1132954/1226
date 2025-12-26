@@ -1,1001 +1,889 @@
-"use strict";
+(() => {
+  "use strict";
 
-/**
- * FinalTerm Go (Human Black, Computer White)
- * FIXES:
- * 1) Two consecutive passes -> AUTO enter scoring mode + show result
- * 2) Better AI: reasonable candidate moves, avoid eye-filling / self-atari, prefer local play
- */
+  // ========= Config =========
+  const N = 9;
+  const EMPTY = 0, BLACK = 1, WHITE = 2;
+  const KOMI = 6.5; // 白貼目
 
-const EMPTY = 0;
-const BLACK = 1;
-const WHITE = 2;
+  // Canvas + layout
+  const canvas = document.getElementById("board");
+  const ctx = canvas.getContext("2d");
 
-const boardEl = document.getElementById("board");
-const sizeEl = document.getElementById("size");
-const handicapEl = document.getElementById("handicap");
-const komiEl = document.getElementById("komi");
-const passBtn = document.getElementById("passBtn");
-const scoreBtn = document.getElementById("scoreBtn");
-const resetBtn = document.getElementById("resetBtn");
+  // UI refs
+  const turnText = document.getElementById("turnText");
+  const turnDot  = document.getElementById("turnDot");
+  const capBEl   = document.getElementById("capB");
+  const capWEl   = document.getElementById("capW");
+  const passEl   = document.getElementById("passCount");
+  const warningEl= document.getElementById("warning");
 
-const turnDot = document.getElementById("turnDot");
-const turnText = document.getElementById("turnText");
-const modeBadge = document.getElementById("modeBadge");
-const capBlackEl = document.getElementById("capBlack");
-const capWhiteEl = document.getElementById("capWhite");
-const movesEl = document.getElementById("moves");
-const hintEl = document.getElementById("hint");
-const warnText = document.getElementById("warnText");
+  const btnPass  = document.getElementById("btnPass");
+  const btnUndo  = document.getElementById("btnUndo");
+  const btnNew   = document.getElementById("btnNew");
 
-// score panel
-const bTerEl = document.getElementById("bTer");
-const wTerEl = document.getElementById("wTer");
-const bPrisEl = document.getElementById("bPris");
-const wPrisEl = document.getElementById("wPris");
-const komiShowEl = document.getElementById("komiShow");
-const bTotalEl = document.getElementById("bTotal");
-const wTotalEl = document.getElementById("wTotal");
-const resultText = document.getElementById("resultText");
-const recalcBtn = document.getElementById("recalcBtn");
-const confirmBtn = document.getElementById("confirmBtn");
+  const overlay  = document.getElementById("overlay");
+  const btnScore = document.getElementById("btnScore");
+  const btnBack  = document.getElementById("btnBackToGame");
+  const btnNew2  = document.getElementById("btnNew2");
+  const scoreBEl = document.getElementById("scoreB");
+  const scoreWEl = document.getElementById("scoreW");
+  const scoreDetailEl = document.getElementById("scoreDetail");
 
-let N = 9;
-let board = [];
-let turn = BLACK; // human always BLACK
-let captures = { [BLACK]: 0, [WHITE]: 0 };
+  // ========= State =========
+  let board;
+  let toPlay;
+  let captures = { [BLACK]: 0, [WHITE]: 0 };
+  let consecutivePasses = 0;
+  let lastMove = null;
+  let history = [];
+  let prevPosStr = "";
+  let inScoring = false;
+  let dead = new Set();
 
-// Simple Ko: forbid returning to immediate previous position
-let lastBoardString = "";
-let lastMove = null; // {r,c,color}
-let moveHistory = [];
-let consecutivePass = 0;
+  // Hover preview (UI/UX +)
+  let hover = null; // {x,y} or null
 
-let scoringMode = false;
-let deadMarks = new Set(); // "r,c"
-let gameEnded = false;
-let territoryOwner = null;
+  // Capture animation (UI/UX +)
+  let capAnims = []; // [{x,y,color,t0,dur}]
+  let rafId = null;
 
-let isComputerThinking = false;
+  // Warning helper (讓錯誤提示停留一下，不要瞬間被 updateUI 洗掉)
+  let warningTimer = null;
+  function showWarning(msg){
+    warningEl.textContent = msg;
+    if (warningTimer) clearTimeout(warningTimer);
+    warningTimer = setTimeout(() => {
+      warningTimer = null;
+      updateUI();
+    }, 2500);
+  }
 
-// ----------------- helpers -----------------
-function opponent(color){ return color === BLACK ? WHITE : BLACK; }
-function colorName(color){ return color === BLACK ? "黑" : "白"; }
-function keyOf(r,c){ return `${r},${c}`; }
-function parseKey(k){ const [r,c]=k.split(",").map(Number); return [r,c]; }
-function cloneBoard(b){ return b.map(row => row.slice()); }
-function boardToString(b){ return b.map(row => row.join("")).join("|"); }
-function inBounds(r,c){ return r>=0 && r<N && c>=0 && c<N; }
+  // ========= Helpers =========
+  const key = (x,y) => `${x},${y}`;
+  const inBounds = (x,y) => x>=0 && x<N && y>=0 && y<N;
+  const opp = (c) => c === BLACK ? WHITE : (c === WHITE ? BLACK : EMPTY);
 
-function neighbors(r,c){
-  const out = [];
-  if (r>0) out.push([r-1,c]);
-  if (r<N-1) out.push([r+1,c]);
-  if (c>0) out.push([r,c-1]);
-  if (c<N-1) out.push([r,c+1]);
-  return out;
-}
+  function cloneBoard(b){
+    return b.map(row => row.slice());
+  }
 
-function coordLabel(r,c){
-  const letters = "ABCDEFGHJKLMNOPQRSTUVWX";
-  const col = letters[c] || "?";
-  const row = (N - r);
-  return `${col}${row}`;
-}
-
-function getGroupAndLiberties(b, sr, sc){
-  const color = b[sr][sc];
-  const q = [[sr, sc]];
-  const seen = new Set([keyOf(sr,sc)]);
-  const stones = [];
-  let liberties = 0;
-  const libSeen = new Set();
-
-  while(q.length){
-    const [r,c] = q.pop();
-    stones.push([r,c]);
-    for(const [nr,nc] of neighbors(r,c)){
-      const v = b[nr][nc];
-      if(v === EMPTY){
-        const k = keyOf(nr,nc);
-        if(!libSeen.has(k)){
-          libSeen.add(k);
-          liberties += 1;
-        }
-      }else if(v === color){
-        const k = keyOf(nr,nc);
-        if(!seen.has(k)){
-          seen.add(k);
-          q.push([nr,nc]);
-        }
-      }
+  function boardToString(b){
+    let s = "";
+    for(let y=0;y<N;y++){
+      for(let x=0;x<N;x++) s += b[y][x];
     }
-  }
-  return { stones, liberties };
-}
-
-function removeStones(b, stones){
-  for(const [r,c] of stones) b[r][c] = EMPTY;
-}
-
-function countStones(){
-  let cnt = 0;
-  for(let r=0;r<N;r++) for(let c=0;c<N;c++) if(board[r][c]!==EMPTY) cnt++;
-  return cnt;
-}
-
-function nearestStoneDistance(r,c){
-  // Manhattan distance to nearest existing stone; large if empty board
-  let best = 1e9;
-  for(let i=0;i<N;i++){
-    for(let j=0;j<N;j++){
-      if(board[i][j]===EMPTY) continue;
-      const d = Math.abs(i-r)+Math.abs(j-c);
-      if(d < best) best = d;
-    }
-  }
-  return best === 1e9 ? 0 : best;
-}
-
-function isEyeFillLike(b, r, c, color){
-  // simple eye-ish detection: all orthogonal neighbors are own color (or edge) and move doesn't capture
-  // (not perfect, but reduces stupid inside-eye moves)
-  for(const [nr,nc] of neighbors(r,c)){
-    if(b[nr][nc] !== color) return false;
-  }
-  return true;
-}
-
-// ----------------- handicap -----------------
-function handicapPoints(size){
-  let d;
-  if(size === 9) d = 2;
-  else if(size === 13) d = 3;
-  else d = 3;
-
-  const max = size - 1;
-  const mid = Math.floor(size/2);
-
-  const tl = [d, d];
-  const tr = [d, max - d];
-  const bl = [max - d, d];
-  const br = [max - d, max - d];
-  const top = [d, mid];
-  const bot = [max - d, mid];
-  const left = [mid, d];
-  const right = [mid, max - d];
-  const center = [mid, mid];
-
-  if(size === 9) return [br, tl, bl, tr, center, left, right, bot, top];
-  return [br, tl, bl, tr, right, left, bot, top, center];
-}
-
-function applyHandicap(h){
-  if(h <= 0) return;
-  const pts = handicapPoints(N);
-  const k = Math.min(h, pts.length);
-  for(let i=0; i<k; i++){
-    const [r,c] = pts[i];
-    board[r][c] = BLACK;
-  }
-}
-
-// ----------------- play rules -----------------
-function playMove(r,c,color){
-  if(!inBounds(r,c)) return { ok:false, msg:"超出棋盤" };
-  if(board[r][c] !== EMPTY) return { ok:false, msg:"此處已有棋子" };
-
-  const before = cloneBoard(board);
-  const beforeCaps = { ...captures };
-  const beforeLastMove = lastMove;
-
-  board[r][c] = color;
-  const opp = opponent(color);
-
-  let captured = [];
-
-  // capture
-  for(const [nr,nc] of neighbors(r,c)){
-    if(board[nr][nc] === opp){
-      const g = getGroupAndLiberties(board, nr, nc);
-      if(g.liberties === 0){
-        captured.push(...g.stones);
-        removeStones(board, g.stones);
-      }
-    }
+    return s;
   }
 
-  // suicide
-  const myG = getGroupAndLiberties(board, r, c);
-  if(myG.liberties === 0){
-    board = before;
-    captures = beforeCaps;
-    lastMove = beforeLastMove;
-    return { ok:false, msg:"不合法：自殺（禁著點）" };
+  function neighbors(x,y){
+    const res = [];
+    if(inBounds(x-1,y)) res.push([x-1,y]);
+    if(inBounds(x+1,y)) res.push([x+1,y]);
+    if(inBounds(x,y-1)) res.push([x,y-1]);
+    if(inBounds(x,y+1)) res.push([x,y+1]);
+    return res;
   }
 
-  // simple Ko (immediate repetition)
-  const nowStr = boardToString(board);
-  if(nowStr === lastBoardString){
-    board = before;
-    captures = beforeCaps;
-    lastMove = beforeLastMove;
-    return { ok:false, msg:"不合法：劫（Ko）" };
-  }
-
-  // update ko reference
-  lastBoardString = boardToString(before);
-
-  if(captured.length){
-    captures[color] += captured.length;
-  }
-
-  lastMove = { r, c, color };
-
-  return { ok:true, msg: captured.length ? `提子 ${captured.length} 顆` : "落子成功", captured };
-}
-
-function isLegalMoveSim(r,c,color){
-  if(!inBounds(r,c)) return false;
-  if(board[r][c] !== EMPTY) return false;
-
-  const tmp = cloneBoard(board);
-  const koRef = lastBoardString;
-
-  // simulate play on tmp
-  const before = cloneBoard(tmp);
-  tmp[r][c] = color;
-  const opp = opponent(color);
-
-  for(const [nr,nc] of neighbors(r,c)){
-    if(tmp[nr][nc] === opp){
-      const g = getGroupAndLiberties(tmp, nr, nc);
-      if(g.liberties === 0) removeStones(tmp, g.stones);
-    }
-  }
-
-  const myG = getGroupAndLiberties(tmp, r, c);
-  if(myG.liberties === 0) return false;
-
-  const nowStr = boardToString(tmp);
-  if(nowStr === koRef) return false;
-
-  // ok
-  return true;
-}
-
-function simCaptureCount(r,c,color){
-  if(!inBounds(r,c) || board[r][c]!==EMPTY) return { ok:false, cap:0, selfLib:0 };
-  const tmp = cloneBoard(board);
-  const koRef = lastBoardString;
-
-  tmp[r][c] = color;
-  const opp = opponent(color);
-  let cap = 0;
-
-  for(const [nr,nc] of neighbors(r,c)){
-    if(tmp[nr][nc] === opp){
-      const g = getGroupAndLiberties(tmp, nr, nc);
-      if(g.liberties === 0){
-        cap += g.stones.length;
-        removeStones(tmp, g.stones);
-      }
-    }
-  }
-
-  const myG = getGroupAndLiberties(tmp, r, c);
-  if(myG.liberties === 0) return { ok:false, cap:0, selfLib:0 };
-
-  const nowStr = boardToString(tmp);
-  if(nowStr === koRef) return { ok:false, cap:0, selfLib:0 };
-
-  return { ok:true, cap, selfLib: myG.liberties };
-}
-
-// ----------------- atari warning -----------------
-function findAtariGroups(color){
-  const seen = new Set();
-  const ataris = [];
-  for(let r=0;r<N;r++){
-    for(let c=0;c<N;c++){
-      if(board[r][c] !== color) continue;
-      const k = keyOf(r,c);
-      if(seen.has(k)) continue;
-      const g = getGroupAndLiberties(board, r, c);
-      for(const [sr,sc] of g.stones) seen.add(keyOf(sr,sc));
-      if(g.liberties === 1) ataris.push(g);
-    }
-  }
-  return ataris;
-}
-
-function updateAtariWarning(){
-  const bAtari = findAtariGroups(BLACK);
-  const wAtari = findAtariGroups(WHITE);
-  if(bAtari.length){
-    warnText.textContent = "⚠ 黑棋被叫吃（atari）";
-  }else if(wAtari.length){
-    warnText.textContent = "⚠ 白棋被叫吃（atari）";
-  }else{
-    warnText.textContent = "";
-  }
-}
-
-// ----------------- AI (improved) -----------------
-function candidateMoves(){
-  const cand = new Set();
-
-  // 🔹 9 路專用開局：前 2 手直接限定
-  if(countStones() <= 2){
-    const mid = Math.floor(N/2); // 4 (0-index)
-    cand.add(keyOf(mid, mid));   // 中央 (5,5)
-
-    // 四個 3-3 星位
-    cand.add(keyOf(2,2));
-    cand.add(keyOf(2,N-3));
-    cand.add(keyOf(N-3,2));
-    cand.add(keyOf(N-3,N-3));
-
-    return [...cand].map(parseKey)
-      .filter(([r,c]) => isLegalMoveSim(r,c,WHITE));
-  }
-
-  // 🔹 中盤：只考慮靠近棋子的點（半徑 2）
-  const stones = [];
-  for(let r=0;r<N;r++){
-    for(let c=0;c<N;c++){
-      if(board[r][c] !== EMPTY) stones.push([r,c]);
-    }
-  }
-
-  for(const [sr,sc] of stones){
-    for(let dr=-2; dr<=2; dr++){
-      for(let dc=-2; dc<=2; dc++){
-        const r = sr + dr;
-        const c = sc + dc;
-        if(!inBounds(r,c)) continue;
-        if(board[r][c] !== EMPTY) continue;
-        cand.add(keyOf(r,c));
-      }
-    }
-  }
-
-  let arr = [...cand].map(parseKey)
-    .filter(([r,c]) => isLegalMoveSim(r,c,WHITE));
-
-  // 🔹 收官：若太少，再放寬
-  if(arr.length < 6){
-    arr = [];
-    for(let r=0;r<N;r++){
-      for(let c=0;c<N;c++){
-        if(board[r][c]===EMPTY && isLegalMoveSim(r,c,WHITE)){
-          arr.push([r,c]);
-        }
-      }
-    }
-  }
-
-  return arr;
-}
-
-function aiChooseMove(){
-  const cands = candidateMoves().filter(([r,c]) => isLegalMoveSim(r,c,WHITE));
-  if(!cands.length) return null;
-
-  // 1) capture immediately
-  for(const [r,c] of cands){
-    const sim = simCaptureCount(r,c,WHITE);
-    if(sim.ok && sim.cap > 0) return { r, c };
-  }
-
-  // 2) save self if in atari: play any liberty point
-  const myAtari = findAtariGroups(WHITE);
-  if(myAtari.length){
-    const libPoints = new Set();
-    for(const [sr,sc] of myAtari[0].stones){
-      for(const [nr,nc] of neighbors(sr,sc)){
-        if(board[nr][nc] === EMPTY) libPoints.add(keyOf(nr,nc));
-      }
-    }
-    for(const k of libPoints){
-      const [r,c] = parseKey(k);
-      if(isLegalMoveSim(r,c,WHITE)) return { r, c };
-    }
-  }
-
-  // 3) evaluate candidates with better heuristics
-  let best = null;
-  let bestScore = -1e18;
-
-  for(const [r,c] of cands){
-    const sc = evaluateAIMove(r,c);
-    if(sc > bestScore){
-      bestScore = sc;
-      best = { r, c };
-    }
-  }
-
-  // If everything is terrible, pass
-  if(bestScore < -2000) return null;
-  return best;
-}
-
-function evaluateAIMove(r,c){
-  const sim = simCaptureCount(r,c,WHITE);
-  if(!sim.ok) return -1e18;
-
-  let score = 0;
-
-  // big reward for capture
-  score += sim.cap * 2000;
-
-  // avoid self-atari (unless capturing)
-  if(sim.cap === 0 && sim.selfLib === 1) score -= 1500;
-
-  // avoid filling own eye
-  if(sim.cap === 0){
-    const tmp = cloneBoard(board);
-    tmp[r][c] = WHITE;
-    if(isEyeFillLike(tmp, r,c,WHITE)) score -= 900;
-  }
-
-  // prefer local play: closer to existing stones
-  const d = nearestStoneDistance(r,c);
-  score += (d === 0 ? 20 : (80 - d*18)); // far => penalty
-
-  // prefer center a bit
-  const mid = (N-1)/2;
-  const distCenter = Math.abs(r-mid)+Math.abs(c-mid);
-  score += (N*2 - distCenter) * 2;
-
-  // adjacency/connectivity
-  let adj = 0;
-  for(const [nr,nc] of neighbors(r,c)){
-    if(board[nr][nc] === WHITE) adj += 1;
-    if(board[nr][nc] === BLACK) adj += 0.6; // fighting area
-  }
-  score += adj * 25;
-
-  // try to put black in atari (rough): if move touches a black group with 2 liberties now, good
-  for(const [nr,nc] of neighbors(r,c)){
-    if(board[nr][nc] === BLACK){
-      const g = getGroupAndLiberties(board, nr, nc);
-      if(g.liberties === 2) score += 120;
-    }
-  }
-
-  // small randomness
-  score += Math.random() * 5;
-
-  return score;
-}
-
-// ----------------- End by passes (AUTO scoring) -----------------
-function autoEnterScoringIfNeeded(){
-  if(scoringMode || gameEnded) return;
-  if(consecutivePass < 2) return;
-
-  // auto enter scoring mode
-  scoringMode = true;
-
-  modeBadge.textContent = "計分模式";
-  modeBadge.classList.add("score");
-
-  scoreBtn.disabled = false;
-  scoreBtn.textContent = "返回對局"; // now acts as toggle back
-
-  recalcBtn.disabled = false;
-  confirmBtn.disabled = false;
-
-  hintEl.textContent = "已連續兩次 Pass → 自動進入計分模式。可點棋子標記死子（再點取消），分數會即時更新。";
-  recalcScore();
-  renderAll();
-}
-
-// ----------------- game flow -----------------
-function initState(n){
-  N = n;
-  board = Array.from({ length: N }, () => Array(N).fill(EMPTY));
-  captures = { [BLACK]: 0, [WHITE]: 0 };
-  lastBoardString = boardToString(board);
-  lastMove = null;
-  moveHistory = [];
-  consecutivePass = 0;
-
-  scoringMode = false;
-  deadMarks = new Set();
-  gameEnded = false;
-  territoryOwner = null;
-
-  turn = BLACK;
-  isComputerThinking = false;
-
-  const h = parseInt(handicapEl.value, 10);
-  applyHandicap(h);
-
-  // komi default
-  if(h > 0) komiEl.value = "0.5";
-  else if(String(komiEl.value).trim() === "") komiEl.value = "6.5";
-  komiShowEl.textContent = String(Number(komiEl.value || 0));
-
-  // buttons
-  scoreBtn.disabled = true;
-  scoreBtn.textContent = "計分";
-  recalcBtn.disabled = true;
-  confirmBtn.disabled = true;
-
-  passBtn.disabled = false;
-  sizeEl.disabled = false;
-  handicapEl.disabled = false;
-  komiEl.disabled = false;
-
-  warnText.textContent = "";
-  renderScorePanel(null);
-
-  hintEl.textContent = "黑先手（你）。點交叉點落子；自殺禁手；單劫禁止立刻還原上一盤面。";
-  renderAll();
-}
-
-function humanClick(r,c){
-  if(gameEnded) return;
-  if(isComputerThinking) return;
-
-  // ✅【新增】非計分模式、輪到黑棋時：若完全無合法著點 → 自動 Pass
-  if(!scoringMode && turn === BLACK && !hasAnyLegalMove(BLACK)){
-    addPassToHistory(BLACK);
-    turn = WHITE;
-    consecutivePass += 1;
-
-    hintEl.textContent = "黑棋無合法著點，自動 Pass。";
-    renderAll();
-    autoEnterScoringIfNeeded();
-
-    // 若尚未進入計分，讓白棋照常走（或白棋也可能被迫 pass）
-    if(!scoringMode){
-      setTimeout(computerMove, 140);
-    }
-    return;
-  }
-
-  // ✅ 原本你的計分模式邏輯照舊
-  if(scoringMode){
-    if(board[r][c] === EMPTY){
-      hintEl.textContent = "計分模式：空點顯示圓點數地；要改分數請點棋子標死子。";
-      return;
-    }
-    const k = keyOf(r,c);
-    if(deadMarks.has(k)) deadMarks.delete(k);
-    else deadMarks.add(k);
-    recalcScore();
-    return;
-  }
-
-  // ⬇ 下面接你原本 humanClick 的「對局落子」內容（不要動）
-  // ...
-}
-
-
-  if(turn !== BLACK){
-    hintEl.textContent = "目前輪到白棋（電腦）...";
-    return;
-  }
-
-  const res = playMove(r,c,BLACK);
-  if(!res.ok){
-    hintEl.textContent = res.msg;
-    return;
-  }
-
-  consecutivePass = 0;
-  addMoveToHistory(BLACK, r,c, res.captured?.length || 0);
-
-  turn = WHITE;
-  hintEl.textContent = res.msg;
-  renderAll(res.captured);
-
-  setTimeout(computerMove, 140);
-}
-
-function computerMove(){
-  if(gameEnded || scoringMode) return;
-  if(turn !== WHITE) return;
-
-  isComputerThinking = true;
-  renderStatus();
-
-  // ✅【新增】白棋若「完全沒有合法著點」→ 自動 Pass
-  if(!hasAnyLegalMove(WHITE)){
-    addPassToHistory(WHITE);
-    turn = BLACK;
-    consecutivePass += 1;
-    isComputerThinking = false;
-
-    hintEl.textContent = "白棋（電腦）無合法著點，自動 Pass。";
-    renderAll();
-    autoEnterScoringIfNeeded();
-    return;
-  }
-
-  const choice = aiChooseMove();
-
-  if(!choice){
-    // computer pass
-    addPassToHistory(WHITE);
-    turn = BLACK;
-    consecutivePass += 1;
-    isComputerThinking = false;
-
-    hintEl.textContent = "白棋（電腦）Pass。";
-    renderAll();
-    autoEnterScoringIfNeeded();
-    return;
-  }
-
-  // ⬇ 原本白棋正常落子的程式碼不動
-}
-
-
-  const { r, c } = choice;
-  const res = playMove(r,c,WHITE);
-  if(!res.ok){
-    // fallback pass (rare)
-    addPassToHistory(WHITE);
-    turn = BLACK;
-    consecutivePass += 1;
-    isComputerThinking = false;
-
-    hintEl.textContent = "白棋（電腦）Pass。";
-    renderAll();
-    autoEnterScoringIfNeeded();
-    return;
-  }
-
-  consecutivePass = 0;
-  addMoveToHistory(WHITE, r,c, res.captured?.length || 0);
-
-  turn = BLACK;
-  isComputerThinking = false;
-
-  hintEl.textContent = res.msg ? `白棋：${res.msg}` : "白棋落子";
-  renderAll(res.captured);
-}
-
-function pass(){
-  if(gameEnded) return;
-  if(isComputerThinking) return;
-
-  if(scoringMode){
-    hintEl.textContent = "計分模式中不可 Pass；請先按『返回對局』退出。";
-    return;
-  }
-
-  // ✅ 先確認是不是輪到黑棋
-  if(turn !== BLACK){
-    hintEl.textContent = "目前輪到白棋（電腦），請稍等。";
-    return;
-  }
-
-  // ✅ 若黑棋已無合法著點，提示被迫 pass（但仍走正常 pass 流程）
-  if(!hasAnyLegalMove(BLACK)){
-    hintEl.textContent = "黑棋已無合法著點（被迫 Pass）。";
-  }
-
-  // ⬇ 接著放你原本 pass() 後半段：addPassToHistory / consecutivePass / autoEnter... 等
-  addPassToHistory(BLACK);
-  turn = WHITE;
-  consecutivePass += 1;
-
-  renderAll();
-  autoEnterScoringIfNeeded();
-
-  if(!scoringMode){
-    setTimeout(computerMove, 140);
-  }
-}
-
-
-function toggleScoringMode(){
-  if(gameEnded) return;
-  if(isComputerThinking) return;
-
-  scoringMode = !scoringMode;
-
-  if(scoringMode){
-    modeBadge.textContent = "計分模式";
-    modeBadge.classList.add("score");
-    recalcBtn.disabled = false;
-    confirmBtn.disabled = false;
-    scoreBtn.textContent = "返回對局";
-    hintEl.textContent = "計分模式：點棋子標記死子（再點取消）。空地以圓點顯示黑地/白地。";
-    recalcScore();
-  }else{
-    modeBadge.textContent = "對局中";
-    modeBadge.classList.remove("score");
-    recalcBtn.disabled = true;
-    confirmBtn.disabled = true;
-    scoreBtn.textContent = "計分";
-    territoryOwner = null;
-    renderScorePanel(null);
-    hintEl.textContent = "已退出計分模式。";
-    renderAll();
-  }
-}
-
-function confirmEnd(){
-  if(!scoringMode) return;
-  gameEnded = true;
-
-  hintEl.textContent = "已確認終局。";
-  scoreBtn.disabled = true;
-  passBtn.disabled = true;
-  sizeEl.disabled = true;
-  handicapEl.disabled = true;
-  komiEl.disabled = true;
-
-  modeBadge.textContent = "已終局";
-  modeBadge.classList.add("score");
-  renderStatus();
-}
-
-function reset(){
-  initState(parseInt(sizeEl.value, 10));
-}
-
-// ----------------- history -----------------
-function addMoveToHistory(color, r,c, capCount){
-  const moveNo = moveHistory.length + 1;
-  const coord = coordLabel(r,c);
-  moveHistory.push(`${moveNo}. ${colorName(color)} ${coord}${capCount>0 ? ` x${capCount}` : ""}`);
-}
-function addPassToHistory(color){
-  const moveNo = moveHistory.length + 1;
-  moveHistory.push(`${moveNo}. ${colorName(color)} Pass`);
-}
-
-// ----------------- scoring -----------------
-function recalcScore(){
-  const komi = Number(komiEl.value || 0);
-  komiShowEl.textContent = String(komi);
-  const score = computeScore({ komi });
-  renderScorePanel(score);
-  renderBoard();
-}
-
-function computeScore({ komi }){
-  const b = cloneBoard(board);
-
-  let deadBlack = 0, deadWhite = 0;
-  for(const k of deadMarks){
-    const [r,c] = parseKey(k);
-    const v = b[r][c];
-    if(v === BLACK) deadBlack++;
-    if(v === WHITE) deadWhite++;
-    b[r][c] = EMPTY;
-  }
-
-  const prisoners = {
-    black: captures[BLACK] + deadWhite,
-    white: captures[WHITE] + deadBlack
-  };
-
-  territoryOwner = Array.from({ length: N }, () => Array(N).fill(EMPTY));
-  const seen = new Set();
-  let terBlack = 0, terWhite = 0;
-
-  for(let r=0; r<N; r++){
-    for(let c=0; c<N; c++){
-      if(b[r][c] !== EMPTY) continue;
-      const k0 = keyOf(r,c);
-      if(seen.has(k0)) continue;
-
-      const q = [[r,c]];
-      seen.add(k0);
-      const region = [];
-      const borderColors = new Set();
-
-      while(q.length){
-        const [cr,cc] = q.pop();
-        region.push([cr,cc]);
-        for(const [nr,nc] of neighbors(cr,cc)){
-          const v = b[nr][nc];
-          if(v === EMPTY){
-            const kk = keyOf(nr,nc);
-            if(!seen.has(kk)){
-              seen.add(kk);
-              q.push([nr,nc]);
-            }
-          }else{
-            borderColors.add(v);
+  function getGroupAndLiberties(b, sx, sy){
+    const color = b[sy][sx];
+    if(color === EMPTY) return { stones: [], liberties: new Set() };
+
+    const seen = new Set();
+    const stones = [];
+    const liberties = new Set();
+    const stack = [[sx,sy]];
+    seen.add(key(sx,sy));
+
+    while(stack.length){
+      const [x,y] = stack.pop();
+      stones.push([x,y]);
+
+      for(const [nx,ny] of neighbors(x,y)){
+        const v = b[ny][nx];
+        if(v === EMPTY){
+          liberties.add(key(nx,ny));
+        }else if(v === color){
+          const k = key(nx,ny);
+          if(!seen.has(k)){
+            seen.add(k);
+            stack.push([nx,ny]);
           }
         }
       }
-
-      if(borderColors.size === 1){
-        const only = [...borderColors][0];
-        for(const [rr,cc] of region) territoryOwner[rr][cc] = only;
-        if(only === BLACK) terBlack += region.length;
-        if(only === WHITE) terWhite += region.length;
-      }else{
-        for(const [rr,cc] of region) territoryOwner[rr][cc] = EMPTY;
-      }
     }
+    return { stones, liberties };
   }
 
-  const territory = { black: terBlack, white: terWhite };
-  const totalBlack = territory.black + prisoners.black;
-  const totalWhite = territory.white + prisoners.white + komi;
-
-  const diff = totalBlack - totalWhite;
-  let result = "";
-  if(Math.abs(diff) < 1e-9) result = "平局";
-  else if(diff > 0) result = `黑勝 +${diff.toFixed(1)}`;
-  else result = `白勝 +${Math.abs(diff).toFixed(1)}`;
-
-  return {
-    territory,
-    prisoners,
-    total: { black: totalBlack, white: Number(totalWhite.toFixed(1)) },
-    resultText: result
-  };
-}
-
-// ----------------- rendering -----------------
-function renderAll(){
-  renderBoard();
-  renderStatus();
-  renderMoves();
-  updateAtariWarning();
-}
-
-function renderStatus(){
-  turnDot.style.background = (turn === BLACK) ? "#111" : "#f2f2f2";
-  if(isComputerThinking && turn === WHITE) turnText.textContent = "輪到：白（電腦思考中…）";
-  else turnText.textContent = `輪到：${colorName(turn)}`;
-  capBlackEl.textContent = String(captures[BLACK]);
-  capWhiteEl.textContent = String(captures[WHITE]);
-}
-
-function renderMoves(){
-  movesEl.innerHTML = "";
-  if(moveHistory.length === 0){
-    movesEl.innerHTML = `<div style="opacity:.7">（尚無落子）</div>`;
-    return;
+  function removeStones(b, stones){
+    for(const [x,y] of stones) b[y][x] = EMPTY;
   }
-  for(let i=0; i<moveHistory.length; i++){
-    const div = document.createElement("div");
-    div.className = "m";
-    const left = document.createElement("span");
-    left.textContent = moveHistory[i];
-    const tag = document.createElement("span");
-    tag.className = "tag";
-    tag.textContent = (i === moveHistory.length - 1) ? "latest" : "";
-    div.appendChild(left);
-    div.appendChild(tag);
-    movesEl.appendChild(div);
-  }
-  movesEl.scrollTop = movesEl.scrollHeight;
-}
 
-function renderScorePanel(score){
-  if(!score){
-    bTerEl.textContent = "0";
-    wTerEl.textContent = "0";
-    bPrisEl.textContent = String(captures[BLACK]);
-    wPrisEl.textContent = String(captures[WHITE]);
-    bTotalEl.textContent = "0";
-    wTotalEl.textContent = "0";
-    resultText.textContent = "尚未計分";
-    return;
-  }
-  bTerEl.textContent = String(score.territory.black);
-  wTerEl.textContent = String(score.territory.white);
-  bPrisEl.textContent = String(score.prisoners.black);
-  wPrisEl.textContent = String(score.prisoners.white);
-  bTotalEl.textContent = String(score.total.black);
-  wTotalEl.textContent = String(score.total.white);
-  resultText.textContent = score.resultText;
-}
+  function tryPlay(b, x, y, color){
+    if(!inBounds(x,y)) return { ok:false, reason:"out_of_bounds" };
+    if(b[y][x] !== EMPTY) return { ok:false, reason:"occupied" };
 
-function renderBoard(){
-  boardEl.style.setProperty("--n", String(N));
-  boardEl.innerHTML = "";
-  boardEl.classList.toggle("score-on", scoringMode);
+    const b2 = cloneBoard(b);
+    b2[y][x] = color;
 
-  const intersections = document.createElement("div");
-  intersections.className = "intersections";
-
-  for(let r=0; r<N; r++){
-    for(let c=0; c<N; c++){
-      const pt = document.createElement("div");
-      pt.className = "pt";
-      pt.dataset.r = String(r);
-      pt.dataset.c = String(c);
-
-      // territory dots (scoring mode only, empty only)
-      if(scoringMode && territoryOwner && board[r][c] === EMPTY){
-        const owner = territoryOwner[r][c];
-        const t = document.createElement("div");
-        if(owner === BLACK) t.className = "territory black";
-        else if(owner === WHITE) t.className = "territory white";
-        else t.className = "territory neutral";
-        pt.appendChild(t);
-      }
-
-      // hover preview only when human can play
-      const preview = document.createElement("div");
-      preview.className = "preview black";
-      preview.style.display = (!scoringMode && !gameEnded && !isComputerThinking && turn === BLACK) ? "block" : "none";
-      pt.appendChild(preview);
-
-      const v = board[r][c];
-      if(v !== EMPTY){
-        const stone = document.createElement("div");
-        stone.className = `stone ${v === BLACK ? "black" : "white"}`;
-
-        if(lastMove && lastMove.r === r && lastMove.c === c && !scoringMode){
-          stone.classList.add("lastmove");
+    // capture adjacent opponent groups with 0 liberties
+    let capturedCount = 0;
+    const capturedStones = [];
+    for(const [nx,ny] of neighbors(x,y)){
+      if(b2[ny][nx] === opp(color)){
+        const g = getGroupAndLiberties(b2, nx, ny);
+        if(g.liberties.size === 0){
+          capturedCount += g.stones.length;
+          capturedStones.push(...g.stones);
+          removeStones(b2, g.stones);
         }
-        if(scoringMode && deadMarks.has(keyOf(r,c))){
-          stone.classList.add("dead");
+      }
+    }
+
+    // suicide check
+    const myGroup = getGroupAndLiberties(b2, x, y);
+    if(myGroup.liberties.size === 0){
+      return { ok:false, reason:"suicide" };
+    }
+
+    return { ok:true, b2, capturedCount, capturedStones };
+  }
+
+  function isLegalMove(b, x, y, color){
+    const r = tryPlay(b, x, y, color);
+    if(!r.ok) return { ok:false, reason:r.reason };
+
+    // simple ko: forbid returning to immediate previous position
+    const posStr = boardToString(r.b2);
+    if(prevPosStr && posStr === prevPosStr){
+      return { ok:false, reason:"ko" };
+    }
+    return { ok:true, next:r };
+  }
+
+  // ========= Drawing =========
+  function computeGeometry(){
+    const w = canvas.width, h = canvas.height;
+    const pad = Math.floor(Math.min(w,h) * 0.08);
+    const size = Math.min(w,h) - pad*2;
+    const step = size / (N-1);
+    return { pad, size, step, w, h };
+  }
+
+  function toBoardCoord(px, py){
+    const { pad, step } = computeGeometry();
+    const x = Math.round((px - pad) / step);
+    const y = Math.round((py - pad) / step);
+    if(!inBounds(x,y)) return null;
+
+    const cx = pad + x*step, cy = pad + y*step;
+    const dist2 = (px-cx)*(px-cx) + (py-cy)*(py-cy);
+    if(dist2 > (step*0.45)*(step*0.45)) return null;
+    return { x, y };
+  }
+
+  function drawBoard(){
+    const { pad, step, w, h } = computeGeometry();
+    ctx.clearRect(0,0,w,h);
+
+    // grid lines
+    ctx.save();
+    ctx.lineWidth = Math.max(1, Math.floor(step*0.06));
+    ctx.strokeStyle = "rgba(20,20,20,.85)";
+
+    for(let i=0;i<N;i++){
+      const p = pad + i*step;
+      // vertical
+      ctx.beginPath();
+      ctx.moveTo(p, pad);
+      ctx.lineTo(p, pad + step*(N-1));
+      ctx.stroke();
+      // horizontal
+      ctx.beginPath();
+      ctx.moveTo(pad, p);
+      ctx.lineTo(pad + step*(N-1), p);
+      ctx.stroke();
+    }
+
+    // star points (9x9)
+    const stars = [[2,2],[2,6],[4,4],[6,2],[6,6]];
+    ctx.fillStyle = "rgba(15,15,15,.85)";
+    for(const [sx,sy] of stars){
+      const x = pad + sx*step, y = pad + sy*step;
+      ctx.beginPath();
+      ctx.arc(x,y, Math.max(2, step*0.08), 0, Math.PI*2);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // scoring overlay hint
+    if(inScoring){
+      drawTerritoryOverlay();
+    }
+
+    // capture fade-out animation layer
+    drawCaptureAnims();
+
+    // stones
+    for(let y=0;y<N;y++){
+      for(let x=0;x<N;x++){
+        const c = board[y][x];
+        if(c !== EMPTY){
+          drawStone(x,y,c);
+          if(inScoring && dead.has(key(x,y))){
+            drawDeadMark(x,y);
+          }
+        }
+      }
+    }
+
+    // last move marker
+    if(lastMove){
+      drawLastMoveMarker(lastMove.x, lastMove.y, lastMove.color);
+    }
+
+    // hover preview (only user's turn)
+    if(!inScoring && toPlay === BLACK && hover){
+      const legal = isLegalMove(board, hover.x, hover.y, BLACK);
+      if(legal.ok){
+        drawGhostStone(hover.x, hover.y, BLACK);
+      }
+    }
+  }
+
+  function drawStone(x,y,color){
+    const { pad, step } = computeGeometry();
+    const cx = pad + x*step, cy = pad + y*step;
+    const r = step*0.42;
+
+    ctx.save();
+    // shadow
+    ctx.beginPath();
+    ctx.arc(cx + r*0.08, cy + r*0.10, r*0.98, 0, Math.PI*2);
+    ctx.fillStyle = "rgba(0,0,0,.25)";
+    ctx.fill();
+
+    // body gradient
+    const g = ctx.createRadialGradient(cx - r*0.3, cy - r*0.35, r*0.1, cx, cy, r);
+    if(color === BLACK){
+      g.addColorStop(0, "rgba(255,255,255,.18)");
+      g.addColorStop(0.35, "rgba(40,40,40,1)");
+      g.addColorStop(1, "rgba(10,10,10,1)");
+    }else{
+      g.addColorStop(0, "rgba(255,255,255,1)");
+      g.addColorStop(0.5, "rgba(235,235,235,1)");
+      g.addColorStop(1, "rgba(200,200,200,1)");
+    }
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI*2);
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.lineWidth = Math.max(1, step*0.05);
+    ctx.strokeStyle = "rgba(0,0,0,.25)";
+    ctx.stroke();
+
+    ctx.restore();
+  }
+
+  function drawGhostStone(x, y, color){
+    const { pad, step } = computeGeometry();
+    const cx = pad + x*step, cy = pad + y*step;
+    const r = step*0.42;
+
+    ctx.save();
+    ctx.globalAlpha = 0.42;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI*2);
+    ctx.fillStyle = (color === BLACK) ? "rgba(10,10,10,1)" : "rgba(245,245,245,1)";
+    ctx.fill();
+
+    ctx.globalAlpha = 0.55;
+    ctx.lineWidth = Math.max(1, step*0.05);
+    ctx.strokeStyle = "rgba(255,255,255,.22)";
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawCaptureAnims(){
+    if(capAnims.length === 0) return;
+
+    const now = performance.now();
+    const { pad, step } = computeGeometry();
+
+    capAnims = capAnims.filter(a => now - a.t0 < a.dur);
+
+    for(const a of capAnims){
+      const t = (now - a.t0) / a.dur;      // 0..1
+      const alpha = Math.max(0, 1 - t);
+      const r = step*0.42 * (1 + t*0.10);
+
+      const cx = pad + a.x*step, cy = pad + a.y*step;
+
+      ctx.save();
+      ctx.globalAlpha = 0.55 * alpha;
+
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI*2);
+      ctx.fillStyle = (a.color === BLACK) ? "rgba(10,10,10,1)" : "rgba(245,245,245,1)";
+      ctx.fill();
+
+      ctx.restore();
+    }
+
+    if(capAnims.length > 0){
+      if(rafId) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => drawBoard());
+    }else{
+      if(rafId) cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+  }
+
+  function drawLastMoveMarker(x,y,color){
+    const { pad, step } = computeGeometry();
+    const cx = pad + x*step, cy = pad + y*step;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, step*0.12, 0, Math.PI*2);
+    ctx.fillStyle = (color === BLACK) ? "rgba(255,255,255,.75)" : "rgba(0,0,0,.55)";
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawDeadMark(x,y){
+    const { pad, step } = computeGeometry();
+    const cx = pad + x*step, cy = pad + y*step;
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,107,107,.85)";
+    ctx.lineWidth = Math.max(2, step*0.08);
+    const r = step*0.18;
+    ctx.beginPath();
+    ctx.moveTo(cx-r, cy-r);
+    ctx.lineTo(cx+r, cy+r);
+    ctx.moveTo(cx+r, cy-r);
+    ctx.lineTo(cx-r, cy+r);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawTerritoryOverlay(){
+    const terr = computeTerritoryPreviewCells();
+    const { pad, step } = computeGeometry();
+
+    ctx.save();
+    ctx.globalAlpha = 0.18;
+    for(const [k, owner] of terr){
+      const [xStr,yStr] = k.split(",");
+      const x = +xStr, y = +yStr;
+      const cx = pad + x*step, cy = pad + y*step;
+      ctx.beginPath();
+      ctx.arc(cx, cy, step*0.20, 0, Math.PI*2);
+      ctx.fillStyle = owner === BLACK ? "#000" : "#fff";
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // ========= Game flow =========
+  function resetGame(){
+    board = Array.from({length:N}, () => Array(N).fill(EMPTY));
+    toPlay = BLACK;
+    captures[BLACK] = 0;
+    captures[WHITE] = 0;
+    consecutivePasses = 0;
+    lastMove = null;
+    history = [];
+    prevPosStr = "";
+    inScoring = false;
+    dead.clear();
+    hover = null;
+    capAnims = [];
+    overlay.classList.add("hidden");
+    updateUI();
+    drawBoard();
+  }
+
+  function pushHistory(){
+    history.push({
+      board: cloneBoard(board),
+      toPlay,
+      captures: { [BLACK]: captures[BLACK], [WHITE]: captures[WHITE] },
+      consecutivePasses,
+      lastMove: lastMove ? {...lastMove} : null,
+      prevPosStr
+    });
+  }
+
+  function popHistory(){
+    const h = history.pop();
+    if(!h) return;
+    board = cloneBoard(h.board);
+    toPlay = h.toPlay;
+    captures[BLACK] = h.captures[BLACK];
+    captures[WHITE] = h.captures[WHITE];
+    consecutivePasses = h.consecutivePasses;
+    lastMove = h.lastMove ? {...h.lastMove} : null;
+    prevPosStr = h.prevPosStr;
+    hover = null;
+    updateUI();
+    drawBoard();
+  }
+
+  function updateUI(){
+    capBEl.textContent = String(captures[BLACK]);
+    capWEl.textContent = String(captures[WHITE]);
+    passEl.textContent = String(consecutivePasses);
+
+    if(toPlay === BLACK){
+      turnText.textContent = "輪到：黑（你）";
+      turnDot.style.background = "#111";
+      turnDot.style.borderColor = "rgba(255,255,255,.35)";
+    }else{
+      turnText.textContent = "輪到：白（電腦）";
+      turnDot.style.background = "#fff";
+      turnDot.style.borderColor = "rgba(0,0,0,.35)";
+    }
+
+    if(inScoring){
+      warningEl.textContent = "終局決算模式：點棋串標記死棋，再按結算。";
+      return;
+    }
+
+    const warn = detectAtariWarnings(board);
+    warningEl.textContent = warn;
+  }
+
+  function detectAtariWarnings(b){
+    const seen = new Set();
+    let blackAtari = 0, whiteAtari = 0;
+
+    for(let y=0;y<N;y++){
+      for(let x=0;x<N;x++){
+        const c = b[y][x];
+        if(c === EMPTY) continue;
+        const k = key(x,y);
+        if(seen.has(k)) continue;
+        const g = getGroupAndLiberties(b,x,y);
+        for(const [sx,sy] of g.stones) seen.add(key(sx,sy));
+        if(g.liberties.size === 1){
+          if(c === BLACK) blackAtari++;
+          else whiteAtari++;
+        }
+      }
+    }
+
+    if(blackAtari === 0 && whiteAtari === 0) return "";
+    let msg = "⚠ 叫吃：";
+    const parts = [];
+    if(blackAtari>0) parts.push(`黑方有 ${blackAtari} 串只剩 1 氣`);
+    if(whiteAtari>0) parts.push(`白方有 ${whiteAtari} 串只剩 1 氣`);
+    return msg + parts.join("；");
+  }
+
+  function endByPasses(){
+    inScoring = true;
+    hover = null;
+    overlay.classList.remove("hidden");
+    updateUI();
+    drawBoard();
+    showScore(computeFinalScore());
+  }
+
+  function showScore(s){
+  scoreBEl.textContent = String(s.blackTotal);
+  scoreWEl.textContent = String(s.whiteTotal);
+
+  scoreDetailEl.innerHTML =
+    `黑：地盤 <b>${s.blackTerritory}</b> + 白死子 <b>${s.whiteDeadCount}</b> + 提子 <b>${captures[BLACK]}</b><br>` +
+    `白：地盤 <b>${s.whiteTerritory}</b> + 黑死子 <b>${s.blackDeadCount}</b> + 提子 <b>${captures[WHITE]}</b> + 貼目 <b>${KOMI}</b><br>` ;
+}
+
+  // ========= Move handlers =========
+  function playMove(x,y,color){
+    const legal = isLegalMove(board, x, y, color);
+    if(!legal.ok){
+      if(color === BLACK){
+        let msg = "";
+        if(legal.reason === "occupied") msg = "這裡已經有棋子。";
+        else if(legal.reason === "suicide") msg = "禁著點：不可自殺。";
+        else if(legal.reason === "ko") msg = "禁著點：劫（ko）不可立即回到上一手局面。";
+        else msg = "不合法落子。";
+        showWarning("⚠ " + msg);
+      }
+      return false;
+    }
+
+    pushHistory();
+
+    const { b2, capturedCount, capturedStones } = legal.next;
+
+    // simple ko reference: store previous position
+    prevPosStr = boardToString(board);
+
+    board = b2;
+
+    // capture animation
+    if(capturedCount > 0 && capturedStones && capturedStones.length){
+      const t0 = performance.now();
+      for(const [cx, cy] of capturedStones){
+        capAnims.push({ x: cx, y: cy, color: opp(color), t0, dur: 240 });
+      }
+      if(!rafId){
+        rafId = requestAnimationFrame(() => drawBoard());
+      }
+    }
+
+    if(capturedCount > 0){
+      captures[color] += capturedCount;
+    }
+    consecutivePasses = 0;
+
+    lastMove = { x, y, color };
+    toPlay = opp(color);
+
+    hover = null;
+    updateUI();
+    drawBoard();
+    return true;
+  }
+
+  function passTurn(){
+    if(inScoring) return;
+    pushHistory();
+
+    prevPosStr = boardToString(board);
+    lastMove = null;
+    hover = null;
+
+    consecutivePasses += 1;
+    toPlay = opp(toPlay);
+
+    updateUI();
+    drawBoard();
+
+    if(consecutivePasses >= 2){
+      endByPasses();
+      return;
+    }
+
+    if(toPlay === WHITE){
+      setTimeout(computerPlay, 220);
+    }
+  }
+
+  // ========= AI (simple heuristic) =========
+  function listLegalMoves(b, color){
+    const res = [];
+    for(let y=0;y<N;y++){
+      for(let x=0;x<N;x++){
+        if(b[y][x] !== EMPTY) continue;
+        const legal = isLegalMove(b, x, y, color);
+        if(legal.ok) res.push({x,y, next: legal.next});
+      }
+    }
+    return res;
+  }
+
+  function countOpponentAtari(b, colorJustPlayed){
+    const opponent = opp(colorJustPlayed);
+    const seen = new Set();
+    let cnt = 0;
+    for(let y=0;y<N;y++){
+      for(let x=0;x<N;x++){
+        if(b[y][x] !== opponent) continue;
+        const k = key(x,y);
+        if(seen.has(k)) continue;
+        const g = getGroupAndLiberties(b,x,y);
+        for(const [sx,sy] of g.stones) seen.add(key(sx,sy));
+        if(g.liberties.size === 1) cnt++;
+      }
+    }
+    return cnt;
+  }
+
+  function evaluateMoveForAI(move){
+    const { x,y, next } = move;
+    const { b2, capturedCount } = next;
+
+    const g = getGroupAndLiberties(b2, x, y);
+    const libs = g.liberties.size;
+
+    let score = 0;
+    score += capturedCount * 12;
+    score += Math.min(6, libs) * 1.2;
+
+    if(libs === 1) score -= 8; // avoid self-atari
+
+    const cx = (N-1)/2, cy = (N-1)/2;
+    const dist = Math.abs(x-cx) + Math.abs(y-cy);
+    score += (N - dist) * 0.15;
+
+    score += countOpponentAtari(b2, WHITE) * 0.9;
+    score += Math.random() * 0.25;
+    return score;
+  }
+
+  function computerPlay(){
+    if(inScoring) return;
+    if(toPlay !== WHITE) return;
+
+    const moves = listLegalMoves(board, WHITE);
+    if(moves.length === 0){
+      passTurn();
+      return;
+    }
+
+    let best = moves[0];
+    let bestScore = -Infinity;
+    for(const m of moves){
+      const sc = evaluateMoveForAI(m);
+      if(sc > bestScore){
+        bestScore = sc;
+        best = m;
+      }
+    }
+
+    playMove(best.x, best.y, WHITE);
+  }
+
+  // ========= Scoring =========
+  function stoneAtScoring(x,y){
+    const v = board[y][x];
+    if(v === EMPTY) return EMPTY;
+    if(dead.has(key(x,y))) return EMPTY;
+    return v;
+  }
+
+  function countDead(color){
+    let cnt = 0;
+    for(let y=0;y<N;y++){
+      for(let x=0;x<N;x++){
+        if(board[y][x] === color && dead.has(key(x,y))) cnt++;
+      }
+    }
+    return cnt;
+  }
+
+  function computeFinalScore(){
+    const visited = new Set();
+    let blackTerritory = 0, whiteTerritory = 0;
+
+    const blackDeadCount = countDead(BLACK);
+    const whiteDeadCount = countDead(WHITE);
+
+    for(let y=0;y<N;y++){
+      for(let x=0;x<N;x++){
+        if(stoneAtScoring(x,y) !== EMPTY) continue;
+        const k0 = key(x,y);
+        if(visited.has(k0)) continue;
+
+        const q = [[x,y]];
+        visited.add(k0);
+        const region = [];
+        const border = new Set();
+
+        while(q.length){
+          const [cx,cy] = q.pop();
+          region.push([cx,cy]);
+
+          for(const [nx,ny] of neighbors(cx,cy)){
+            const v = stoneAtScoring(nx,ny);
+            if(v === EMPTY){
+              const kk = key(nx,ny);
+              if(!visited.has(kk)){
+                visited.add(kk);
+                q.push([nx,ny]);
+              }
+            }else{
+              border.add(v);
+            }
+          }
         }
 
-        pt.appendChild(stone);
+        if(border.size === 1){
+          const owner = [...border][0];
+          if(owner === BLACK) blackTerritory += region.length;
+          if(owner === WHITE) whiteTerritory += region.length;
+        }
       }
+    }
 
-      pt.addEventListener("click", () => {
-        const rr = parseInt(pt.dataset.r, 10);
-        const cc = parseInt(pt.dataset.c, 10);
-        humanClick(rr, cc);
-      });
+    const blackTotal = blackTerritory + whiteDeadCount + captures[BLACK];
+    const whiteTotal = whiteTerritory + blackDeadCount + captures[WHITE] + KOMI;
 
-      intersections.appendChild(pt);
+    return {
+      blackTerritory, whiteTerritory,
+      blackDeadCount, whiteDeadCount,
+      blackTotal, whiteTotal
+    };
+  }
+
+  function computeTerritoryPreviewCells(){
+    const visited = new Set();
+    const territoryCells = [];
+
+    for(let y=0;y<N;y++){
+      for(let x=0;x<N;x++){
+        if(stoneAtScoring(x,y) !== EMPTY) continue;
+        const k0 = key(x,y);
+        if(visited.has(k0)) continue;
+
+        const q = [[x,y]];
+        visited.add(k0);
+        const region = [];
+        const border = new Set();
+
+        while(q.length){
+          const [cx,cy] = q.pop();
+          region.push([cx,cy]);
+
+          for(const [nx,ny] of neighbors(cx,cy)){
+            const v = stoneAtScoring(nx,ny);
+            if(v === EMPTY){
+              const kk = key(nx,ny);
+              if(!visited.has(kk)){
+                visited.add(kk);
+                q.push([nx,ny]);
+              }
+            }else{
+              border.add(v);
+            }
+          }
+        }
+
+        if(border.size === 1){
+          const owner = [...border][0];
+          for(const [rx,ry] of region){
+            territoryCells.push([key(rx,ry), owner]);
+          }
+        }
+      }
+    }
+    return territoryCells;
+  }
+
+  function toggleDeadGroupAt(x,y){
+    const v = board[y][x];
+    if(v === EMPTY) return;
+
+    const g = getGroupAndLiberties(board, x, y);
+
+    let allDead = true;
+    for(const [sx,sy] of g.stones){
+      if(!dead.has(key(sx,sy))){
+        allDead = false;
+        break;
+      }
+    }
+
+    for(const [sx,sy] of g.stones){
+      const k = key(sx,sy);
+      if(allDead) dead.delete(k);
+      else dead.add(k);
     }
   }
 
-  boardEl.appendChild(intersections);
-}
+  // ========= Events =========
+  function onCanvasClick(ev){
+    const rect = canvas.getBoundingClientRect();
+    const px = (ev.clientX - rect.left) * (canvas.width / rect.width);
+    const py = (ev.clientY - rect.top)  * (canvas.height / rect.height);
 
-// ----------------- events -----------------
-sizeEl.addEventListener("change", reset);
-handicapEl.addEventListener("change", reset);
+    const p = toBoardCoord(px,py);
+    if(!p) return;
 
-passBtn.addEventListener("click", pass);
-resetBtn.addEventListener("click", reset);
+    if(inScoring){
+      if(board[p.y][p.x] !== EMPTY){
+        toggleDeadGroupAt(p.x,p.y);
+        drawBoard();
+        showScore(computeFinalScore());
+      }
+      return;
+    }
 
-scoreBtn.addEventListener("click", () => {
-  // allow manual toggle after auto scoring
-  if(consecutivePass >= 2 || scoringMode) toggleScoringMode();
-  else hintEl.textContent = "需連續兩次 Pass 後才能計分。";
-});
-
-recalcBtn.addEventListener("click", recalcScore);
-confirmBtn.addEventListener("click", confirmEnd);
-
-komiEl.addEventListener("input", () => {
-  komiShowEl.textContent = String(Number(komiEl.value || 0));
-  if(scoringMode) recalcScore();
-});
-function hasAnyLegalMove(color){
-  for(let r=0; r<N; r++){
-    for(let c=0; c<N; c++){
-      if(board[r][c] !== EMPTY) continue;
-      if(isLegalMoveSim(r,c,color)) return true;
+    if(toPlay !== BLACK) return;
+    const ok = playMove(p.x, p.y, BLACK);
+    if(ok && toPlay === WHITE){
+      setTimeout(computerPlay, 220);
     }
   }
-  return false;
-}
-function hasAnyLegalMove(color){
-  for(let r=0; r<N; r++){
-    for(let c=0; c<N; c++){
-      if(board[r][c] !== EMPTY) continue;
-      if(isLegalMoveSim(r,c,color)) return true;
+
+  btnPass.addEventListener("click", () => {
+    if(inScoring) return;
+    passTurn();
+  });
+
+  btnUndo.addEventListener("click", () => {
+    if(inScoring) return;
+    if(history.length === 0) return;
+
+    popHistory();
+    if(toPlay === WHITE && history.length > 0){
+      popHistory();
     }
+  });
+
+  btnNew.addEventListener("click", resetGame);
+  btnNew2.addEventListener("click", resetGame);
+
+  btnScore.addEventListener("click", () => {
+    if(!inScoring) return;
+    showScore(computeFinalScore());
+  });
+
+  btnBack.addEventListener("click", () => {
+    inScoring = false;
+    dead.clear();
+    overlay.classList.add("hidden");
+    updateUI();
+    drawBoard();
+  });
+
+  canvas.addEventListener("click", onCanvasClick);
+
+  // hover preview events
+  canvas.addEventListener("mousemove", (ev) => {
+    if(inScoring || toPlay !== BLACK) { hover = null; return; }
+
+    const rect = canvas.getBoundingClientRect();
+    const px = (ev.clientX - rect.left) * (canvas.width / rect.width);
+    const py = (ev.clientY - rect.top)  * (canvas.height / rect.height);
+
+    const p = toBoardCoord(px, py);
+    if(!p){
+      if(hover){ hover = null; drawBoard(); }
+      return;
+    }
+
+    if(!hover || hover.x !== p.x || hover.y !== p.y){
+      hover = { x: p.x, y: p.y };
+      drawBoard();
+    }
+  });
+
+  canvas.addEventListener("mouseleave", () => {
+    if(hover){
+      hover = null;
+      drawBoard();
+    }
+  });
+
+  // ========= Resize (robust) =========
+  function resizeCanvas(){
+    const parent = canvas.parentElement || document.body;
+    const rect = parent.getBoundingClientRect();
+    const size = Math.max(520, Math.min(Math.floor(rect.width) - 28, 900));
+
+    canvas.width = size;
+    canvas.height = size;
+
+    drawBoard();
   }
-  return false;
-}
 
+  window.addEventListener("resize", resizeCanvas);
 
-// init
-resetUIState();
-initState(parseInt(sizeEl.value, 10));
-
+  // ========= Init =========
+  resetGame();
+  resizeCanvas();
+})();
