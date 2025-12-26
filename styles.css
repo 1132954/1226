@@ -286,12 +286,12 @@ input{ width: 90px; }
 .scoreActions{ display:flex; gap: 8px; margin-top: 10px; }
 
 .footer{ margin-top: 12px; color: rgba(255,255,255,0.55); font-size: 12px; text-align:center; }
-#board { position: relative; }
+.board { position: relative; }
 
-#board::before,
-#board::after { pointer-events: none; }
+.board::before,
+.board::after { pointer-events: none; }
 
-#board .intersections{
+.board .intersections{
   position:absolute;
   inset:0;
   display:grid;
@@ -300,4 +300,4 @@ input{ width: 90px; }
   z-index: 5;
 }
 
-#board .pt{ position:relative; }
+.board .pt{ position:relative; }
