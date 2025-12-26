@@ -288,15 +288,16 @@ input{ width: 90px; }
 .footer{ margin-top: 12px; color: rgba(255,255,255,0.55); font-size: 12px; text-align:center; }
 #board { position: relative; }
 
-/* 如果你用 #board::before / ::after 做木紋或暗角，一定要加 */
 #board::before,
-#board::after {
-  pointer-events: none;
-}
+#board::after { pointer-events: none; }
 
-/* 交叉點層一定要在最上面 */
-#board .intersections {
-  position: absolute;
-  inset: 0;
+#board .intersections{
+  position:absolute;
+  inset:0;
+  display:grid;
+  grid-template-columns: repeat(var(--n), 1fr);
+  grid-template-rows: repeat(var(--n), 1fr);
   z-index: 5;
 }
+
+#board .pt{ position:relative; }
