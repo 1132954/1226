@@ -2,13 +2,9 @@
 
 /**
  * FinalTerm Go (Human Black, Computer White)
- * - Play on intersections (grid)
- * - Captures, suicide illegal, simple ko (no immediate repetition)
- * - Handicap placement (standard points for 9/13/19)
- * - End: two consecutive passes -> scoring mode
- * - Scoring: Japanese style (territory + prisoners + dead stones + komi for White)
- * - Life/death: user marks dead stones in scoring mode
- * - AI: simple heuristic (capture > save atari > atari opponent > centerish random legal)
+ * FIXES:
+ * 1) Two consecutive passes -> AUTO enter scoring mode + show result
+ * 2) Better AI: reasonable candidate moves, avoid eye-filling / self-atari, prefer local play
  */
 
 const EMPTY = 0;
@@ -48,18 +44,21 @@ let N = 9;
 let board = [];
 let turn = BLACK; // human always BLACK
 let captures = { [BLACK]: 0, [WHITE]: 0 };
-let lastBoardString = ""; // for simple ko: forbid immediate repetition of previous board position
-let lastMove = null;      // {r,c,color}
+
+// Simple Ko: forbid returning to immediate previous position
+let lastBoardString = "";
+let lastMove = null; // {r,c,color}
 let moveHistory = [];
 let consecutivePass = 0;
 
 let scoringMode = false;
-let deadMarks = new Set();     // "r,c"
+let deadMarks = new Set(); // "r,c"
 let gameEnded = false;
-let territoryOwner = null;     // 2D owners for empty points in scoring mode
+let territoryOwner = null;
 
 let isComputerThinking = false;
 
+// ----------------- helpers -----------------
 function opponent(color){ return color === BLACK ? WHITE : BLACK; }
 function colorName(color){ return color === BLACK ? "黑" : "白"; }
 function keyOf(r,c){ return `${r},${c}`; }
@@ -75,6 +74,13 @@ function neighbors(r,c){
   if (c>0) out.push([r,c-1]);
   if (c<N-1) out.push([r,c+1]);
   return out;
+}
+
+function coordLabel(r,c){
+  const letters = "ABCDEFGHJKLMNOPQRSTUVWX";
+  const col = letters[c] || "?";
+  const row = (N - r);
+  return `${col}${row}`;
 }
 
 function getGroupAndLiberties(b, sr, sc){
@@ -112,44 +118,55 @@ function removeStones(b, stones){
   for(const [r,c] of stones) b[r][c] = EMPTY;
 }
 
-function coordLabel(r,c){
-  // common Go coords skip I
-  const letters = "ABCDEFGHJKLMNOPQRSTUVWX";
-  const col = letters[c] || "?";
-  const row = (N - r);
-  return `${col}${row}`;
+function countStones(){
+  let cnt = 0;
+  for(let r=0;r<N;r++) for(let c=0;c<N;c++) if(board[r][c]!==EMPTY) cnt++;
+  return cnt;
 }
 
-/* =========================
-   Handicap points
-   ========================= */
+function nearestStoneDistance(r,c){
+  // Manhattan distance to nearest existing stone; large if empty board
+  let best = 1e9;
+  for(let i=0;i<N;i++){
+    for(let j=0;j<N;j++){
+      if(board[i][j]===EMPTY) continue;
+      const d = Math.abs(i-r)+Math.abs(j-c);
+      if(d < best) best = d;
+    }
+  }
+  return best === 1e9 ? 0 : best;
+}
+
+function isEyeFillLike(b, r, c, color){
+  // simple eye-ish detection: all orthogonal neighbors are own color (or edge) and move doesn't capture
+  // (not perfect, but reduces stupid inside-eye moves)
+  for(const [nr,nc] of neighbors(r,c)){
+    if(b[nr][nc] !== color) return false;
+  }
+  return true;
+}
+
+// ----------------- handicap -----------------
 function handicapPoints(size){
-  // standard hoshi-ish points for 9/13/19
-  // returns list of points in standard placement order (as most GUIs do)
-  // order: 4 corners, sides, center, etc.
   let d;
-  if(size === 9) d = 2;      // 3-3
-  else if(size === 13) d = 3; // 4-4
-  else d = 3;                // 4-4 (19)
+  if(size === 9) d = 2;
+  else if(size === 13) d = 3;
+  else d = 3;
+
   const max = size - 1;
+  const mid = Math.floor(size/2);
 
   const tl = [d, d];
   const tr = [d, max - d];
   const bl = [max - d, d];
   const br = [max - d, max - d];
-
-  const mid = Math.floor(size/2);
   const top = [d, mid];
   const bot = [max - d, mid];
   const left = [mid, d];
   const right = [mid, max - d];
   const center = [mid, mid];
 
-  // typical order for handicap: 4 corners then sides then center
-  if(size === 9){
-    return [br, tl, bl, tr, center, left, right, bot, top];
-  }
-  // 13/19
+  if(size === 9) return [br, tl, bl, tr, center, left, right, bot, top];
   return [br, tl, bl, tr, right, left, bot, top, center];
 }
 
@@ -163,22 +180,21 @@ function applyHandicap(h){
   }
 }
 
-/* =========================
-   Legal move + play (with captures, suicide, ko)
-   ========================= */
-function playMove(r,c,color, { animateCaptures=false } = {}){
+// ----------------- play rules -----------------
+function playMove(r,c,color){
   if(!inBounds(r,c)) return { ok:false, msg:"超出棋盤" };
   if(board[r][c] !== EMPTY) return { ok:false, msg:"此處已有棋子" };
 
   const before = cloneBoard(board);
-  const beforeCaptures = { ...captures };
+  const beforeCaps = { ...captures };
   const beforeLastMove = lastMove;
 
   board[r][c] = color;
   const opp = opponent(color);
 
-  // capture opponent groups with 0 liberties
   let captured = [];
+
+  // capture
   for(const [nr,nc] of neighbors(r,c)){
     if(board[nr][nc] === opp){
       const g = getGroupAndLiberties(board, nr, nc);
@@ -189,25 +205,25 @@ function playMove(r,c,color, { animateCaptures=false } = {}){
     }
   }
 
-  // suicide check
+  // suicide
   const myG = getGroupAndLiberties(board, r, c);
   if(myG.liberties === 0){
     board = before;
-    captures = beforeCaptures;
+    captures = beforeCaps;
     lastMove = beforeLastMove;
     return { ok:false, msg:"不合法：自殺（禁著點）" };
   }
 
-  // simple ko check: forbid returning to immediate previous position
+  // simple Ko (immediate repetition)
   const nowStr = boardToString(board);
   if(nowStr === lastBoardString){
     board = before;
-    captures = beforeCaptures;
+    captures = beforeCaps;
     lastMove = beforeLastMove;
     return { ok:false, msg:"不合法：劫（Ko）" };
   }
 
-  // update ko reference: previous board becomes lastBoardString
+  // update ko reference
   lastBoardString = boardToString(before);
 
   if(captured.length){
@@ -216,52 +232,67 @@ function playMove(r,c,color, { animateCaptures=false } = {}){
 
   lastMove = { r, c, color };
 
-  // animation marker for captured stones: store in DOM after render (we do after render via captured list)
   return { ok:true, msg: captured.length ? `提子 ${captured.length} 顆` : "落子成功", captured };
 }
 
-function isLegalMove(r,c,color){
+function isLegalMoveSim(r,c,color){
+  if(!inBounds(r,c)) return false;
+  if(board[r][c] !== EMPTY) return false;
+
   const tmp = cloneBoard(board);
-  const tmpCaps = { ...captures };
-  const tmpLast = lastMove;
-  const tmpKo = lastBoardString;
+  const koRef = lastBoardString;
 
-  // simulate
-  const res = playMove_sim(tmp, tmpKo, r, c, color);
-  // restore not needed since using tmp
-  return res.ok;
-}
-
-function playMove_sim(tmpBoard, koRef, r,c,color){
-  if(!inBounds(r,c)) return { ok:false };
-  if(tmpBoard[r][c] !== EMPTY) return { ok:false };
-  const before = cloneBoard(tmpBoard);
-
-  tmpBoard[r][c] = color;
+  // simulate play on tmp
+  const before = cloneBoard(tmp);
+  tmp[r][c] = color;
   const opp = opponent(color);
 
-  // capture
   for(const [nr,nc] of neighbors(r,c)){
-    if(tmpBoard[nr][nc] === opp){
-      const g = getGroupAndLiberties(tmpBoard, nr, nc);
-      if(g.liberties === 0) removeStones(tmpBoard, g.stones);
+    if(tmp[nr][nc] === opp){
+      const g = getGroupAndLiberties(tmp, nr, nc);
+      if(g.liberties === 0) removeStones(tmp, g.stones);
     }
   }
 
-  // suicide
-  const myG = getGroupAndLiberties(tmpBoard, r, c);
-  if(myG.liberties === 0) return { ok:false };
+  const myG = getGroupAndLiberties(tmp, r, c);
+  if(myG.liberties === 0) return false;
 
-  // ko
-  const nowStr = boardToString(tmpBoard);
-  if(nowStr === koRef) return { ok:false };
+  const nowStr = boardToString(tmp);
+  if(nowStr === koRef) return false;
 
-  return { ok:true };
+  // ok
+  return true;
 }
 
-/* =========================
-   Atari warning (叫吃)
-   ========================= */
+function simCaptureCount(r,c,color){
+  if(!inBounds(r,c) || board[r][c]!==EMPTY) return { ok:false, cap:0, selfLib:0 };
+  const tmp = cloneBoard(board);
+  const koRef = lastBoardString;
+
+  tmp[r][c] = color;
+  const opp = opponent(color);
+  let cap = 0;
+
+  for(const [nr,nc] of neighbors(r,c)){
+    if(tmp[nr][nc] === opp){
+      const g = getGroupAndLiberties(tmp, nr, nc);
+      if(g.liberties === 0){
+        cap += g.stones.length;
+        removeStones(tmp, g.stones);
+      }
+    }
+  }
+
+  const myG = getGroupAndLiberties(tmp, r, c);
+  if(myG.liberties === 0) return { ok:false, cap:0, selfLib:0 };
+
+  const nowStr = boardToString(tmp);
+  if(nowStr === koRef) return { ok:false, cap:0, selfLib:0 };
+
+  return { ok:true, cap, selfLib: myG.liberties };
+}
+
+// ----------------- atari warning -----------------
 function findAtariGroups(color){
   const seen = new Set();
   const ataris = [];
@@ -278,139 +309,170 @@ function findAtariGroups(color){
   return ataris;
 }
 
-/* =========================
-   AI (White)
-   ========================= */
-function aiChooseMove(){
-  // return {r,c} or null for pass
-  const legalMoves = [];
-  for(let r=0;r<N;r++){
-    for(let c=0;c<N;c++){
-      if(board[r][c] !== EMPTY) continue;
-      if(playMove_sim(cloneBoard(board), lastBoardString, r, c, WHITE).ok){
-        legalMoves.push([r,c]);
+function updateAtariWarning(){
+  const bAtari = findAtariGroups(BLACK);
+  const wAtari = findAtariGroups(WHITE);
+  if(bAtari.length){
+    warnText.textContent = "⚠ 黑棋被叫吃（atari）";
+  }else if(wAtari.length){
+    warnText.textContent = "⚠ 白棋被叫吃（atari）";
+  }else{
+    warnText.textContent = "";
+  }
+}
+
+// ----------------- AI (improved) -----------------
+function candidateMoves(){
+  // Only consider points near existing stones to avoid "weird far moves"
+  const stones = [];
+  for(let r=0;r<N;r++) for(let c=0;c<N;c++) if(board[r][c]!==EMPTY) stones.push([r,c]);
+
+  const cand = new Set();
+
+  if(stones.length === 0){
+    // opening: center / star points
+    const mid = Math.floor(N/2);
+    cand.add(keyOf(mid, mid));
+    for(const [r,c] of handicapPoints(N)) cand.add(keyOf(r,c));
+    return [...cand].map(parseKey);
+  }
+
+  // add empty points within radius 2 of any stone
+  for(const [sr,sc] of stones){
+    for(let dr=-2; dr<=2; dr++){
+      for(let dc=-2; dc<=2; dc++){
+        const r = sr + dr, c = sc + dc;
+        if(!inBounds(r,c)) continue;
+        if(board[r][c] !== EMPTY) continue;
+        cand.add(keyOf(r,c));
       }
     }
   }
-  if(!legalMoves.length) return null;
+
+  // fallback: if too few candidates, include all empties (rare endgame)
+  let arr = [...cand].map(parseKey);
+  if(arr.length < 8){
+    arr = [];
+    for(let r=0;r<N;r++) for(let c=0;c<N;c++) if(board[r][c]===EMPTY) arr.push([r,c]);
+  }
+  return arr;
+}
+
+function aiChooseMove(){
+  const cands = candidateMoves().filter(([r,c]) => isLegalMoveSim(r,c,WHITE));
+  if(!cands.length) return null;
 
   // 1) capture immediately
-  for(const [r,c] of legalMoves){
-    const tmp = cloneBoard(board);
-    const res = playMove_sim_captureCount(tmp, lastBoardString, r,c,WHITE);
-    if(res.ok && res.capturedCount > 0) return { r, c };
+  for(const [r,c] of cands){
+    const sim = simCaptureCount(r,c,WHITE);
+    if(sim.ok && sim.cap > 0) return { r, c };
   }
 
-  // 2) save self if in atari: try moves that increase liberties for an atari group
+  // 2) save self if in atari: play any liberty point
   const myAtari = findAtariGroups(WHITE);
   if(myAtari.length){
-    const target = myAtari[0];
-    const [lr,lc] = target.stones[0];
-    // try legal moves that connect/defend around that group
-    const candidates = new Set();
-    for(const [sr,sc] of target.stones){
+    const libPoints = new Set();
+    for(const [sr,sc] of myAtari[0].stones){
       for(const [nr,nc] of neighbors(sr,sc)){
-        if(board[nr][nc] === EMPTY) candidates.add(keyOf(nr,nc));
+        if(board[nr][nc] === EMPTY) libPoints.add(keyOf(nr,nc));
       }
     }
-    const candArr = [...candidates].map(parseKey).filter(([r,c]) => playMove_sim(cloneBoard(board), lastBoardString, r,c,WHITE).ok);
-    if(candArr.length) return { r: candArr[0][0], c: candArr[0][1] };
+    for(const k of libPoints){
+      const [r,c] = parseKey(k);
+      if(isLegalMoveSim(r,c,WHITE)) return { r, c };
+    }
   }
 
-  // 3) put opponent in atari / attack: find move that reduces black group liberties to 1 or captures next
+  // 3) evaluate candidates with better heuristics
   let best = null;
-  let bestScore = -1e9;
-  for(const [r,c] of legalMoves){
-    const score = evaluateMove(r,c,WHITE);
-    if(score > bestScore){
-      bestScore = score;
+  let bestScore = -1e18;
+
+  for(const [r,c] of cands){
+    const sc = evaluateAIMove(r,c);
+    if(sc > bestScore){
+      bestScore = sc;
       best = { r, c };
     }
   }
-  return best ?? { r: legalMoves[0][0], c: legalMoves[0][1] };
+
+  // If everything is terrible, pass
+  if(bestScore < -2000) return null;
+  return best;
 }
 
-function playMove_sim_captureCount(tmpBoard, koRef, r,c,color){
-  if(!inBounds(r,c)) return { ok:false, capturedCount:0 };
-  if(tmpBoard[r][c] !== EMPTY) return { ok:false, capturedCount:0 };
-
-  tmpBoard[r][c] = color;
-  const opp = opponent(color);
-  let cap = 0;
-
-  for(const [nr,nc] of neighbors(r,c)){
-    if(tmpBoard[nr][nc] === opp){
-      const g = getGroupAndLiberties(tmpBoard, nr, nc);
-      if(g.liberties === 0){
-        cap += g.stones.length;
-        removeStones(tmpBoard, g.stones);
-      }
-    }
-  }
-  const myG = getGroupAndLiberties(tmpBoard, r, c);
-  if(myG.liberties === 0) return { ok:false, capturedCount:0 };
-
-  const nowStr = boardToString(tmpBoard);
-  if(nowStr === koRef) return { ok:false, capturedCount:0 };
-
-  return { ok:true, capturedCount: cap };
-}
-
-function evaluateMove(r,c,color){
-  // heuristic: capture > make opponent atari > center preference > connectivity
-  const tmp = cloneBoard(board);
-  const sim = playMove_sim_captureCount(tmp, lastBoardString, r,c,color);
-  if(!sim.ok) return -1e9;
+function evaluateAIMove(r,c){
+  const sim = simCaptureCount(r,c,WHITE);
+  if(!sim.ok) return -1e18;
 
   let score = 0;
-  score += sim.capturedCount * 1000;
 
-  // after playing, count if any black group is in atari
-  const tmp2 = cloneBoard(board);
-  tmp2[r][c] = color;
-  const opp = opponent(color);
-  // remove captured for more realistic
-  for(const [nr,nc] of neighbors(r,c)){
-    if(tmp2[nr][nc] === opp){
-      const g = getGroupAndLiberties(tmp2, nr, nc);
-      if(g.liberties === 0) removeStones(tmp2, g.stones);
-    }
-  }
-  let atariCount = 0;
-  const seen = new Set();
-  for(let i=0;i<N;i++){
-    for(let j=0;j<N;j++){
-      if(tmp2[i][j] !== opp) continue;
-      const k = `${i},${j}`;
-      if(seen.has(k)) continue;
-      const g = getGroupAndLiberties(tmp2, i, j);
-      for(const [sr,sc] of g.stones) seen.add(`${sr},${sc}`);
-      if(g.liberties === 1) atariCount++;
-    }
-  }
-  score += atariCount * 60;
+  // big reward for capture
+  score += sim.cap * 2000;
 
-  // center preference
+  // avoid self-atari (unless capturing)
+  if(sim.cap === 0 && sim.selfLib === 1) score -= 1500;
+
+  // avoid filling own eye
+  if(sim.cap === 0){
+    const tmp = cloneBoard(board);
+    tmp[r][c] = WHITE;
+    if(isEyeFillLike(tmp, r,c,WHITE)) score -= 900;
+  }
+
+  // prefer local play: closer to existing stones
+  const d = nearestStoneDistance(r,c);
+  score += (d === 0 ? 20 : (80 - d*18)); // far => penalty
+
+  // prefer center a bit
   const mid = (N-1)/2;
-  const dist = Math.abs(r-mid) + Math.abs(c-mid);
-  score += (N - dist) * 2;
+  const distCenter = Math.abs(r-mid)+Math.abs(c-mid);
+  score += (N*2 - distCenter) * 2;
 
-  // adjacency (connect / expand)
+  // adjacency/connectivity
   let adj = 0;
   for(const [nr,nc] of neighbors(r,c)){
-    if(board[nr][nc] === color) adj += 1;
+    if(board[nr][nc] === WHITE) adj += 1;
+    if(board[nr][nc] === BLACK) adj += 0.6; // fighting area
   }
-  score += adj * 8;
+  score += adj * 25;
 
-  // small randomness to avoid identical play
-  score += Math.random() * 2;
+  // try to put black in atari (rough): if move touches a black group with 2 liberties now, good
+  for(const [nr,nc] of neighbors(r,c)){
+    if(board[nr][nc] === BLACK){
+      const g = getGroupAndLiberties(board, nr, nc);
+      if(g.liberties === 2) score += 120;
+    }
+  }
+
+  // small randomness
+  score += Math.random() * 5;
 
   return score;
 }
 
-/* =========================
-   Game flow
-   ========================= */
+// ----------------- End by passes (AUTO scoring) -----------------
+function autoEnterScoringIfNeeded(){
+  if(scoringMode || gameEnded) return;
+  if(consecutivePass < 2) return;
+
+  // auto enter scoring mode
+  scoringMode = true;
+
+  modeBadge.textContent = "計分模式";
+  modeBadge.classList.add("score");
+
+  scoreBtn.disabled = false;
+  scoreBtn.textContent = "返回對局"; // now acts as toggle back
+
+  recalcBtn.disabled = false;
+  confirmBtn.disabled = false;
+
+  hintEl.textContent = "已連續兩次 Pass → 自動進入計分模式。可點棋子標記死子（再點取消），分數會即時更新。";
+  recalcScore();
+  renderAll();
+}
+
+// ----------------- game flow -----------------
 function initState(n){
   N = n;
   board = Array.from({ length: N }, () => Array(N).fill(EMPTY));
@@ -425,23 +487,20 @@ function initState(n){
   gameEnded = false;
   territoryOwner = null;
 
-  turn = BLACK; // always start black (human)
+  turn = BLACK;
   isComputerThinking = false;
 
-  // apply handicap
   const h = parseInt(handicapEl.value, 10);
   applyHandicap(h);
 
-  // common practice: with handicap, komi is 0.5 (or 0). Here we set 0.5 by default.
-  if(h > 0){
-    komiEl.value = "0.5";
-  }else{
-    if(String(komiEl.value).trim() === "") komiEl.value = "6.5";
-  }
+  // komi default
+  if(h > 0) komiEl.value = "0.5";
+  else if(String(komiEl.value).trim() === "") komiEl.value = "6.5";
   komiShowEl.textContent = String(Number(komiEl.value || 0));
 
-  renderAll();
+  // buttons
   scoreBtn.disabled = true;
+  scoreBtn.textContent = "計分";
   recalcBtn.disabled = true;
   confirmBtn.disabled = true;
 
@@ -450,7 +509,11 @@ function initState(n){
   handicapEl.disabled = false;
   komiEl.disabled = false;
 
+  warnText.textContent = "";
+  renderScorePanel(null);
+
   hintEl.textContent = "黑先手（你）。點交叉點落子；自殺禁手；單劫禁止立刻還原上一盤面。";
+  renderAll();
 }
 
 function humanClick(r,c){
@@ -458,9 +521,8 @@ function humanClick(r,c){
   if(isComputerThinking) return;
 
   if(scoringMode){
-    // mark dead stones
     if(board[r][c] === EMPTY){
-      hintEl.textContent = "計分模式：空點顯示圓點數地。要改分數請點棋子標死子。";
+      hintEl.textContent = "計分模式：空點顯示圓點數地；要改分數請點棋子標死子。";
       return;
     }
     const k = keyOf(r,c);
@@ -470,13 +532,12 @@ function humanClick(r,c){
     return;
   }
 
-  // only allow human when turn = BLACK
   if(turn !== BLACK){
     hintEl.textContent = "目前輪到白棋（電腦）...";
     return;
   }
 
-  const res = playMove(r,c,BLACK, { animateCaptures:true });
+  const res = playMove(r,c,BLACK);
   if(!res.ok){
     hintEl.textContent = res.msg;
     return;
@@ -485,14 +546,11 @@ function humanClick(r,c){
   consecutivePass = 0;
   addMoveToHistory(BLACK, r,c, res.captured?.length || 0);
 
-  // switch to white
   turn = WHITE;
-  warnText.textContent = "";
   hintEl.textContent = res.msg;
   renderAll(res.captured);
 
-  // computer respond
-  setTimeout(computerMove, 120);
+  setTimeout(computerMove, 140);
 }
 
 function computerMove(){
@@ -503,57 +561,43 @@ function computerMove(){
   renderStatus();
 
   const choice = aiChooseMove();
+
   if(!choice){
-    // pass
+    // computer pass
     addPassToHistory(WHITE);
     turn = BLACK;
     consecutivePass += 1;
-    hintEl.textContent = "白棋（電腦）Pass。";
     isComputerThinking = false;
 
-    if(consecutivePass >= 2){
-      scoreBtn.disabled = false;
-      hintEl.textContent = "已連續兩次 Pass。可按『計分』進入終局計分（點棋子標死子）。";
-    }
+    hintEl.textContent = "白棋（電腦）Pass。";
     renderAll();
+    autoEnterScoringIfNeeded();
     return;
   }
 
   const { r, c } = choice;
-  const res = playMove(r,c,WHITE, { animateCaptures:true });
+  const res = playMove(r,c,WHITE);
   if(!res.ok){
-    // fallback: if somehow illegal due to race/ko, pass
+    // fallback pass (rare)
     addPassToHistory(WHITE);
     turn = BLACK;
     consecutivePass += 1;
-    hintEl.textContent = "白棋（電腦）Pass。";
     isComputerThinking = false;
+
+    hintEl.textContent = "白棋（電腦）Pass。";
     renderAll();
+    autoEnterScoringIfNeeded();
     return;
   }
 
   consecutivePass = 0;
   addMoveToHistory(WHITE, r,c, res.captured?.length || 0);
+
   turn = BLACK;
   isComputerThinking = false;
 
   hintEl.textContent = res.msg ? `白棋：${res.msg}` : "白棋落子";
   renderAll(res.captured);
-
-  // atari warning for UX: show if black has group in atari or white in atari
-  updateAtariWarning();
-}
-
-function updateAtariWarning(){
-  const bAtari = findAtariGroups(BLACK);
-  const wAtari = findAtariGroups(WHITE);
-  if(bAtari.length){
-    warnText.textContent = "⚠ 黑棋有被叫吃（atari）";
-  }else if(wAtari.length){
-    warnText.textContent = "⚠ 白棋有被叫吃（atari）";
-  }else{
-    warnText.textContent = "";
-  }
 }
 
 function pass(){
@@ -561,7 +605,7 @@ function pass(){
   if(isComputerThinking) return;
 
   if(scoringMode){
-    hintEl.textContent = "計分模式中不可 Pass；請先退出計分模式。";
+    hintEl.textContent = "計分模式中不可 Pass；請先按『返回對局』退出。";
     return;
   }
   if(turn !== BLACK){
@@ -573,26 +617,17 @@ function pass(){
   turn = WHITE;
   consecutivePass += 1;
 
-  if(consecutivePass >= 2){
-    scoreBtn.disabled = false;
-    hintEl.textContent = "已連續兩次 Pass。可按『計分』進入終局計分（點棋子標死子）。";
-    renderAll();
-    return;
-  }else{
-    hintEl.textContent = "黑棋 Pass。";
-  }
+  hintEl.textContent = "黑棋 Pass。";
   renderAll();
-  setTimeout(computerMove, 120);
+  autoEnterScoringIfNeeded();
+
+  // if not ended, let computer move
+  if(!scoringMode) setTimeout(computerMove, 140);
 }
 
 function toggleScoringMode(){
   if(gameEnded) return;
   if(isComputerThinking) return;
-
-  if(!scoringMode && consecutivePass < 2){
-    hintEl.textContent = "需連續兩次 Pass 後才能計分。";
-    return;
-  }
 
   scoringMode = !scoringMode;
 
@@ -602,7 +637,7 @@ function toggleScoringMode(){
     recalcBtn.disabled = false;
     confirmBtn.disabled = false;
     scoreBtn.textContent = "返回對局";
-    hintEl.textContent = "計分模式：點棋子標記死子（再點一次取消）。空地以圓點顯示黑地/白地。";
+    hintEl.textContent = "計分模式：點棋子標記死子（再點取消）。空地以圓點顯示黑地/白地。";
     recalcScore();
   }else{
     modeBadge.textContent = "對局中";
@@ -634,13 +669,10 @@ function confirmEnd(){
 }
 
 function reset(){
-  scoreBtn.disabled = true;
   initState(parseInt(sizeEl.value, 10));
 }
 
-/* =========================
-   History UI
-   ========================= */
+// ----------------- history -----------------
 function addMoveToHistory(color, r,c, capCount){
   const moveNo = moveHistory.length + 1;
   const coord = coordLabel(r,c);
@@ -651,21 +683,18 @@ function addPassToHistory(color){
   moveHistory.push(`${moveNo}. ${colorName(color)} Pass`);
 }
 
-/* =========================
-   Scoring (Japanese style)
-   ========================= */
+// ----------------- scoring -----------------
 function recalcScore(){
   const komi = Number(komiEl.value || 0);
   komiShowEl.textContent = String(komi);
   const score = computeScore({ komi });
   renderScorePanel(score);
-  renderBoard(); // refresh territory dots
+  renderBoard();
 }
 
 function computeScore({ komi }){
   const b = cloneBoard(board);
 
-  // remove dead stones => count as prisoners for opponent
   let deadBlack = 0, deadWhite = 0;
   for(const k of deadMarks){
     const [r,c] = parseKey(k);
@@ -680,7 +709,6 @@ function computeScore({ komi }){
     white: captures[WHITE] + deadBlack
   };
 
-  // territory calculation
   territoryOwner = Array.from({ length: N }, () => Array(N).fill(EMPTY));
   const seen = new Set();
   let terBlack = 0, terWhite = 0;
@@ -742,11 +770,9 @@ function computeScore({ komi }){
   };
 }
 
-/* =========================
-   Rendering
-   ========================= */
-function renderAll(capturedList){
-  renderBoard(capturedList);
+// ----------------- rendering -----------------
+function renderAll(){
+  renderBoard();
   renderStatus();
   renderMoves();
   updateAtariWarning();
@@ -756,7 +782,6 @@ function renderStatus(){
   turnDot.style.background = (turn === BLACK) ? "#111" : "#f2f2f2";
   if(isComputerThinking && turn === WHITE) turnText.textContent = "輪到：白（電腦思考中…）";
   else turnText.textContent = `輪到：${colorName(turn)}`;
-
   capBlackEl.textContent = String(captures[BLACK]);
   capWhiteEl.textContent = String(captures[WHITE]);
 }
@@ -802,15 +827,13 @@ function renderScorePanel(score){
   resultText.textContent = score.resultText;
 }
 
-function renderBoard(capturedList = []){
+function renderBoard(){
   boardEl.style.setProperty("--n", String(N));
   boardEl.innerHTML = "";
   boardEl.classList.toggle("score-on", scoringMode);
 
   const intersections = document.createElement("div");
   intersections.className = "intersections";
-
-  const capturedSet = new Set(capturedList.map(([r,c]) => keyOf(r,c)));
 
   for(let r=0; r<N; r++){
     for(let c=0; c<N; c++){
@@ -819,7 +842,7 @@ function renderBoard(capturedList = []){
       pt.dataset.r = String(r);
       pt.dataset.c = String(c);
 
-      // territory dots in scoring mode (empty points only)
+      // territory dots (scoring mode only, empty only)
       if(scoringMode && territoryOwner && board[r][c] === EMPTY){
         const owner = territoryOwner[r][c];
         const t = document.createElement("div");
@@ -831,11 +854,10 @@ function renderBoard(capturedList = []){
 
       // hover preview only when human can play
       const preview = document.createElement("div");
-      preview.className = `preview ${BLACK === BLACK ? "black" : "white"}`;
+      preview.className = "preview black";
       preview.style.display = (!scoringMode && !gameEnded && !isComputerThinking && turn === BLACK) ? "block" : "none";
       pt.appendChild(preview);
 
-      // stones
       const v = board[r][c];
       if(v !== EMPTY){
         const stone = document.createElement("div");
@@ -844,14 +866,8 @@ function renderBoard(capturedList = []){
         if(lastMove && lastMove.r === r && lastMove.c === c && !scoringMode){
           stone.classList.add("lastmove");
         }
-
         if(scoringMode && deadMarks.has(keyOf(r,c))){
           stone.classList.add("dead");
-        }
-
-        // captured animation marker (only for immediate render cycle)
-        if(capturedSet.has(keyOf(r,c))){
-          stone.classList.add("captured-anim");
         }
 
         pt.appendChild(stone);
@@ -870,16 +886,19 @@ function renderBoard(capturedList = []){
   boardEl.appendChild(intersections);
 }
 
-/* =========================
-   Events
-   ========================= */
+// ----------------- events -----------------
 sizeEl.addEventListener("change", reset);
 handicapEl.addEventListener("change", reset);
 
 passBtn.addEventListener("click", pass);
 resetBtn.addEventListener("click", reset);
 
-scoreBtn.addEventListener("click", toggleScoringMode);
+scoreBtn.addEventListener("click", () => {
+  // allow manual toggle after auto scoring
+  if(consecutivePass >= 2 || scoringMode) toggleScoringMode();
+  else hintEl.textContent = "需連續兩次 Pass 後才能計分。";
+});
+
 recalcBtn.addEventListener("click", recalcScore);
 confirmBtn.addEventListener("click", confirmEnd);
 
@@ -888,32 +907,8 @@ komiEl.addEventListener("input", () => {
   if(scoringMode) recalcScore();
 });
 
-/* enable score button after two passes */
-function maybeEnableScoring(){
-  if(consecutivePass >= 2){
-    scoreBtn.disabled = false;
-  }else{
-    scoreBtn.disabled = true;
-  }
-}
-
-/* Hook to keep score button state updated */
-const _origPass = pass;
-pass = function(){
-  _origPass();
-  maybeEnableScoring();
-};
-
-function resetUIState(){
-  scoreBtn.disabled = true;
-  scoreBtn.textContent = "計分";
-  modeBadge.textContent = "對局中";
-  modeBadge.classList.remove("score");
-  recalcBtn.disabled = true;
-  confirmBtn.disabled = true;
-  warnText.textContent = "";
-  renderScorePanel(null);
-}
+// init
+initState(parseInt(sizeEl.value, 10));
 
 // init
 resetUIState();
