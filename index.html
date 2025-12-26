@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>圍棋 Go</title>
+  <title>1132954 -FinalTerm</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
@@ -12,8 +12,8 @@
       <div class="brand">
         <div class="logo">围</div>
         <div class="titles">
-          <h1>圍棋</h1>
-          <p>支援提子・禁入點（自殺）・單劫（Ko）・終局計分</p>
+          <h1>圍棋 Final Term</h1>
+          <p>人類(黑)先手｜電腦(白)後手｜讓子｜提子｜禁著(自殺/劫)｜終局計分</p>
         </div>
       </div>
 
@@ -21,14 +21,29 @@
         <div class="control">
           <label for="size">棋盤</label>
           <select id="size">
-            <option value="9">9 路</option>
+            <option value="9" selected>9 路</option>
             <option value="13">13 路</option>
-            <option value="19" selected>19 路</option>
+            <option value="19">19 路</option>
           </select>
         </div>
 
         <div class="control">
-          <label for="komi">貼目</label>
+          <label for="handicap">讓子(黑)</label>
+          <select id="handicap">
+            <option value="0" selected>0</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+            <option value="6">6</option>
+            <option value="7">7</option>
+            <option value="8">8</option>
+            <option value="9">9</option>
+          </select>
+        </div>
+
+        <div class="control">
+          <label for="komi">貼目(白)</label>
           <input id="komi" type="number" step="0.5" value="6.5" />
         </div>
 
@@ -50,6 +65,7 @@
             <div class="meta">
               <span>黑提子：<b id="capBlack">0</b></span>
               <span>白提子：<b id="capWhite">0</b></span>
+              <span class="warn" id="warnText"></span>
             </div>
           </div>
 
@@ -58,7 +74,7 @@
           </div>
 
           <div class="hint" id="hint">
-            點格線交叉點落子；不允許自殺；單劫禁止立刻還原上一盤面。
+            黑先手。點交叉點落子；自殺禁手；單劫禁止立刻還原上一盤面。若白方在計算中會自動下子。
           </div>
         </div>
       </section>
@@ -67,15 +83,16 @@
         <div class="panel panel-small">
           <h2>操作</h2>
           <ul>
-            <li>左鍵：落子（或在計分模式標記死子）</li>
+            <li>你是黑棋：點交叉點落子</li>
+            <li>電腦是白棋：你落子後自動回應</li>
             <li>Pass：跳過回合；連續兩次 Pass 可開始計分</li>
-            <li>計分：進入/退出計分模式（可點棋子標死子）</li>
+            <li>計分：進入/退出計分模式（點棋子標死子）</li>
           </ul>
         </div>
 
         <div class="panel panel-small">
           <h2>計分面板</h2>
-          <div id="scorePanel" class="scorepanel">
+          <div class="scorepanel">
             <div class="row"><span>黑地</span><b id="bTer">0</b></div>
             <div class="row"><span>白地</span><b id="wTer">0</b></div>
             <div class="row"><span>黑提子</span><b id="bPris">0</b></div>
@@ -101,7 +118,7 @@
     </main>
 
     <footer class="footer">
-      <span>計分為「地 + 提子 + 死子（算提子） + 貼目」，死活需手動標記。</span>
+      <span>終局：連續兩次 Pass。計分：地 + 提子 + 死子(算提子) + 貼目。死活可在計分模式點棋子標記。</span>
     </footer>
   </div>
 
