@@ -323,25 +323,36 @@ function updateAtariWarning(){
 
 // ----------------- AI (improved) -----------------
 function candidateMoves(){
-  // Only consider points near existing stones to avoid "weird far moves"
-  const stones = [];
-  for(let r=0;r<N;r++) for(let c=0;c<N;c++) if(board[r][c]!==EMPTY) stones.push([r,c]);
-
   const cand = new Set();
 
-  if(stones.length === 0){
-    // opening: center / star points
-    const mid = Math.floor(N/2);
-    cand.add(keyOf(mid, mid));
-    for(const [r,c] of handicapPoints(N)) cand.add(keyOf(r,c));
-    return [...cand].map(parseKey);
+  // 🔹 9 路專用開局：前 2 手直接限定
+  if(countStones() <= 2){
+    const mid = Math.floor(N/2); // 4 (0-index)
+    cand.add(keyOf(mid, mid));   // 中央 (5,5)
+
+    // 四個 3-3 星位
+    cand.add(keyOf(2,2));
+    cand.add(keyOf(2,N-3));
+    cand.add(keyOf(N-3,2));
+    cand.add(keyOf(N-3,N-3));
+
+    return [...cand].map(parseKey)
+      .filter(([r,c]) => isLegalMoveSim(r,c,WHITE));
   }
 
-  // add empty points within radius 2 of any stone
+  // 🔹 中盤：只考慮靠近棋子的點（半徑 2）
+  const stones = [];
+  for(let r=0;r<N;r++){
+    for(let c=0;c<N;c++){
+      if(board[r][c] !== EMPTY) stones.push([r,c]);
+    }
+  }
+
   for(const [sr,sc] of stones){
     for(let dr=-2; dr<=2; dr++){
       for(let dc=-2; dc<=2; dc++){
-        const r = sr + dr, c = sc + dc;
+        const r = sr + dr;
+        const c = sc + dc;
         if(!inBounds(r,c)) continue;
         if(board[r][c] !== EMPTY) continue;
         cand.add(keyOf(r,c));
@@ -349,12 +360,21 @@ function candidateMoves(){
     }
   }
 
-  // fallback: if too few candidates, include all empties (rare endgame)
-  let arr = [...cand].map(parseKey);
-  if(arr.length < 8){
+  let arr = [...cand].map(parseKey)
+    .filter(([r,c]) => isLegalMoveSim(r,c,WHITE));
+
+  // 🔹 收官：若太少，再放寬
+  if(arr.length < 6){
     arr = [];
-    for(let r=0;r<N;r++) for(let c=0;c<N;c++) if(board[r][c]===EMPTY) arr.push([r,c]);
+    for(let r=0;r<N;r++){
+      for(let c=0;c<N;c++){
+        if(board[r][c]===EMPTY && isLegalMoveSim(r,c,WHITE)){
+          arr.push([r,c]);
+        }
+      }
+    }
   }
+
   return arr;
 }
 
