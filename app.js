@@ -540,6 +540,24 @@ function humanClick(r,c){
   if(gameEnded) return;
   if(isComputerThinking) return;
 
+  // ✅【新增】非計分模式、輪到黑棋時：若完全無合法著點 → 自動 Pass
+  if(!scoringMode && turn === BLACK && !hasAnyLegalMove(BLACK)){
+    addPassToHistory(BLACK);
+    turn = WHITE;
+    consecutivePass += 1;
+
+    hintEl.textContent = "黑棋無合法著點，自動 Pass。";
+    renderAll();
+    autoEnterScoringIfNeeded();
+
+    // 若尚未進入計分，讓白棋照常走（或白棋也可能被迫 pass）
+    if(!scoringMode){
+      setTimeout(computerMove, 140);
+    }
+    return;
+  }
+
+  // ✅ 原本你的計分模式邏輯照舊
   if(scoringMode){
     if(board[r][c] === EMPTY){
       hintEl.textContent = "計分模式：空點顯示圓點數地；要改分數請點棋子標死子。";
@@ -551,6 +569,11 @@ function humanClick(r,c){
     recalcScore();
     return;
   }
+
+  // ⬇ 下面接你原本 humanClick 的「對局落子」內容（不要動）
+  // ...
+}
+
 
   if(turn !== BLACK){
     hintEl.textContent = "目前輪到白棋（電腦）...";
@@ -580,6 +603,19 @@ function computerMove(){
   isComputerThinking = true;
   renderStatus();
 
+  // ✅【新增】白棋若「完全沒有合法著點」→ 自動 Pass
+  if(!hasAnyLegalMove(WHITE)){
+    addPassToHistory(WHITE);
+    turn = BLACK;
+    consecutivePass += 1;
+    isComputerThinking = false;
+
+    hintEl.textContent = "白棋（電腦）無合法著點，自動 Pass。";
+    renderAll();
+    autoEnterScoringIfNeeded();
+    return;
+  }
+
   const choice = aiChooseMove();
 
   if(!choice){
@@ -594,6 +630,10 @@ function computerMove(){
     autoEnterScoringIfNeeded();
     return;
   }
+
+  // ⬇ 原本白棋正常落子的程式碼不動
+}
+
 
   const { r, c } = choice;
   const res = playMove(r,c,WHITE);
@@ -628,22 +668,31 @@ function pass(){
     hintEl.textContent = "計分模式中不可 Pass；請先按『返回對局』退出。";
     return;
   }
+
+  // ✅ 先確認是不是輪到黑棋
   if(turn !== BLACK){
     hintEl.textContent = "目前輪到白棋（電腦），請稍等。";
     return;
   }
 
+  // ✅ 若黑棋已無合法著點，提示被迫 pass（但仍走正常 pass 流程）
+  if(!hasAnyLegalMove(BLACK)){
+    hintEl.textContent = "黑棋已無合法著點（被迫 Pass）。";
+  }
+
+  // ⬇ 接著放你原本 pass() 後半段：addPassToHistory / consecutivePass / autoEnter... 等
   addPassToHistory(BLACK);
   turn = WHITE;
   consecutivePass += 1;
 
-  hintEl.textContent = "黑棋 Pass。";
   renderAll();
   autoEnterScoringIfNeeded();
 
-  // if not ended, let computer move
-  if(!scoringMode) setTimeout(computerMove, 140);
+  if(!scoringMode){
+    setTimeout(computerMove, 140);
+  }
 }
+
 
 function toggleScoringMode(){
   if(gameEnded) return;
@@ -926,9 +975,25 @@ komiEl.addEventListener("input", () => {
   komiShowEl.textContent = String(Number(komiEl.value || 0));
   if(scoringMode) recalcScore();
 });
+function hasAnyLegalMove(color){
+  for(let r=0; r<N; r++){
+    for(let c=0; c<N; c++){
+      if(board[r][c] !== EMPTY) continue;
+      if(isLegalMoveSim(r,c,color)) return true;
+    }
+  }
+  return false;
+}
+function hasAnyLegalMove(color){
+  for(let r=0; r<N; r++){
+    for(let c=0; c<N; c++){
+      if(board[r][c] !== EMPTY) continue;
+      if(isLegalMoveSim(r,c,color)) return true;
+    }
+  }
+  return false;
+}
 
-// init
-initState(parseInt(sizeEl.value, 10));
 
 // init
 resetUIState();
